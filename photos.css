@@ -1,0 +1,30 @@
+/* Photo layouts use Obsidian surfaces and leave the Markdown source untouched. */
+.ji-card-item { min-width:0; overflow:hidden; border:1px solid var(--background-modifier-border); border-radius:10px; background:var(--background-secondary); }
+.ji-card-item.is-compact { background:var(--background-primary); }
+.ji-shell .ji-card-item>.ji-card { width:100%; border:0; border-radius:0; }
+.ji-card-item:focus-within { outline:2px solid var(--interactive-accent); outline-offset:2px; }
+.ji-photos { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; min-width:0; }
+.ji-photo-slot { position:relative; min-width:0; }
+.ji-card-photos { padding:0 14px 14px; }
+.ji-memory-photos { padding:14px 14px 0; }
+.ji-photo-tile { position:relative; display:flex; align-items:center; justify-content:center; width:100%; height:auto; min-width:0; min-height:0; aspect-ratio:1; padding:0; overflow:hidden; border:1px solid var(--background-modifier-border); border-radius:7px; background:var(--background-secondary); color:var(--text-normal); box-shadow:none; cursor:pointer; }
+.ji-photo-tile:hover { border-color:var(--interactive-accent); }
+.ji-photo-tile:focus-visible,.ji-note-edit:focus-visible,.ji-photo-viewer button:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; }
+.ji-photo-thumb { display:block; width:100%; height:100%; object-fit:cover; }
+.ji-photo-placeholder { padding:6px; color:var(--text-muted); font-size:11px; line-height:1.3; text-align:center; overflow-wrap:anywhere; }
+.ji-photo-more { position:absolute; right:6px; bottom:6px; min-width:36px; min-height:36px; padding:4px 7px; border:0; border-radius:6px; background:rgba(0,0,0,.72); color:#fff; font-size:13px; font-weight:650; cursor:pointer; }
+.ji-photo-more:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; }
+.ji-note-gallery { grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr)); gap:8px; max-width:600px; margin:8px 0; }
+.ji-note-gallery .ji-photo-tile { max-height:180px; }
+.ji-note-gallery .ji-photo-slot:only-child { max-width:240px; }
+.ji-editor-gallery { display:block; margin:6px 0; }
+.ji-empty-photo-section { display:none; }
+.ji-note-edit { min-height:32px; height:auto; padding:5px 10px; font-size:12px; }
+.ji-photo-viewer { display:flex; flex-direction:column; gap:14px; color:var(--text-normal); }
+.ji-photo-viewer-nav { display:flex; justify-content:space-between; align-items:center; gap:14px; }
+.ji-photo-count { color:var(--text-muted); font-size:13px; }
+.ji-photo-viewer-stage { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; min-height:180px; max-height:70vh; overflow:auto; background:var(--background-secondary); border-radius:10px; }
+.ji-photo-full { display:block; max-width:100%; max-height:70vh; object-fit:contain; }
+.ji-photo-unavailable { color:var(--text-muted); padding:10px; text-align:center; }
+.ji-photo-close { align-self:flex-end; }
+@media (hover:none) and (pointer:coarse) { .ji-photo-tile,.ji-photo-more { min-height:44px; } .ji-note-edit { min-height:44px; } }

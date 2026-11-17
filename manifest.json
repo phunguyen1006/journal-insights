@@ -1,0 +1,9 @@
+{
+  "id": "journal-insights",
+  "name": "Journal Insights",
+  "version": "0.6.0",
+  "minAppVersion": "1.8.7",
+  "description": "A private dashboard for daily journals, memories, and writing insights.",
+  "author": "Phu's Journaling",
+  "isDesktopOnly": false
+}

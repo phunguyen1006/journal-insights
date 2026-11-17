@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const {parsePhotos,pictureGroups,maskNonContent,resolvePhoto}=require('./photos');
+const text=`---\nbanner: "[[banner.png]]"\n---\n# Heading\nUnicode 📁\n\`![[inline.png]]\`\n\`\`\`md\n![[code.png]]\n\`\`\`\n%% ![[comment.png]] %%\n<%* tR += '![[template.png]]' %>\n### 📁 Pictures\n![[one.png|300]]\n![[folder/two.jpg]]\n![alt](https://example.com/image?id=1)\n![[missing.webp]]\n### <p hidden>PicturesEnd</p>\n![](dayone-moment://ABC123)\n![[not-a-photo.md]]\n`;
+const found=parsePhotos(text);assert.deepEqual(found.map(x=>x.kind),['local','local','remote','local','dayone']);assert.deepEqual(found.map(x=>text.slice(x.start,x.end)),['![[one.png|300]]','![[folder/two.jpg]]','![alt](https://example.com/image?id=1)','![[missing.webp]]','![](dayone-moment://ABC123)']);
+const groups=pictureGroups(text);assert.equal(groups.length,1);assert.equal(groups[0].photos.length,4);assert(text.slice(groups[0].from,groups[0].to).startsWith('![[one.png|300]]'));assert(text.slice(groups[0].from,groups[0].to).endsWith('![[missing.webp]]'));
+assert.equal(maskNonContent(text).length,text.length);
+assert.deepEqual(parsePhotos('\uFEFF---\nbanner: "![x](https://example.test/banner.png)"\n---\n![[real.png]]').map(p=>p.target),['real.png']);
+const mixed='### Pictures\n![[a.png]]\nA caption stays visible\n![[b.png]]\n## Next\n![[outside.png]]';const runs=pictureGroups(mixed);assert.equal(runs.length,2);assert.deepEqual(runs.map(r=>r.photos.length),[1,1]);
+const spaced='### Pictures\r\n![[a.png]]\r\n\r\n![[b.png]]\r\n### <p hidden>PicturesEnd</p>\r\n';assert.equal(pictureGroups(spaced)[0].photos.length,2);
+const odd='![a](https://example.test/photo(a).png?x=1)\n![b](<folder/image%20name.png> "title")\n![x](javascript:alert(1))';const pf=parsePhotos(odd);assert.equal(pf.length,2);assert.equal(pf[0].target,'https://example.test/photo(a).png?x=1');assert.equal(pf[1].target,'folder/image name.png');
+class TFile{};const asset=new TFile(),calls=[];const app={metadataCache:{getFirstLinkpathDest:(link,path)=>{calls.push([link,path]);return link==='a.png'?asset:null}},vault:{getResourcePath:()=>"app://local-asset"}};
+assert.equal(resolvePhoto(app,{kind:'local',target:'a.png'},'01 Daily/test.md',TFile).src,'app://local-asset');assert.equal(resolvePhoto(app,{kind:'local',target:'missing.png'},'01 Daily/test.md',TFile).kind,'missing');assert.equal(resolvePhoto(app,{kind:'remote',target:'https://x.test'},'x',TFile).kind,'remote');assert.equal(calls.length,2);
+console.log('PASS: ordered image parsing, Unicode offsets, source exclusions, safe URI classes, groups, captions, CRLF and attachment resolution.');

@@ -1,0 +1,12 @@
+# Obsidian vault data and local plugin settings must not be published.
+/.obsidian/
+/data.json
+/community-plugins.before.json
+/.archive/
+/.trash/
+
+# Local dependencies, logs, and editor/OS files.
+/node_modules/
+*.log
+.DS_Store
+Thumbs.db
