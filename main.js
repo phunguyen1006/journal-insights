@@ -186,9 +186,103 @@ function registerNoteGalleries(plugin,{photos,TFile,editorInfoField,editorLivePr
 module.exports={registerNoteGalleries};
 
 return module.exports;})();
+const metricsModule = (()=>{const module={exports:{}};
+'use strict';
+const DAY=86400000;
+const CATEGORIES=[
+  {key:'spiritual',label:'Spiritual'}, {key:'career',label:'Career'},
+  {key:'relationships',label:'Relationships'}, {key:'health',label:'Health'},
+  {key:'growth',label:'Growth'}, {key:'recreation',label:'Recreation'},
+  {key:'social',label:'Social'}, {key:'finance',label:'Finance'}
+];
+function dayNumber(key){const n=Date.parse(String(key)+'T00:00:00Z');return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===key?Math.floor(n/DAY):null;}
+function dayKey(n){return new Date(n*DAY).toISOString().slice(0,10)}
+function shift(key,n){const d=dayNumber(key);return d===null?null:dayKey(d+n)}
+function score(value){
+  if(typeof value!=='number'&&typeof value!=='string')return null;
+  if(typeof value==='string'&&!/^\s*(?:\d+(?:\.\d+)?)\s*$/.test(value))return null;
+  const n=Number(value);return Number.isFinite(n)&&n>=1&&n<=10?n:null;
+}
+const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
+function ratings(rows,range,today){
+  const groups=new Map();for(const row of rows){if(!row.date||dayNumber(row.date)===null||row.date>today||row.date<range.start||row.date>range.end)continue;const s=score(row.rating);if(s===null)continue;if(!groups.has(row.date))groups.set(row.date,{date:row.date,values:new Set(),records:[]});const g=groups.get(row.date);g.values.add(s);g.records.push(row);}
+  const data=[],conflicts=[];for(const g of groups.values()){if(g.values.size===1)data.push({date:g.date,value:[...g.values][0],records:g.records});else conflicts.push({date:g.date,records:g.records});}
+  data.sort((a,b)=>a.date.localeCompare(b.date));conflicts.sort((a,b)=>a.date.localeCompare(b.date));
+  const buckets=new Map(),fractional=data.some(x=>!Number.isInteger(x.value)),distribution=Array.from({length:10},(_,i)=>({label:fractional&&i<9?String(i+1)+'–<'+String(i+2):String(i+1),value:0,dates:[]}));
+  for(const x of data){const month=x.date.slice(0,7);if(!buckets.has(month))buckets.set(month,{label:month,values:[],dates:[]});let b=buckets.get(month);b.values.push(x.value);b.dates.push(x.date);const index=Math.min(9,Math.floor(x.value)-1);distribution[index].value++;distribution[index].dates.push(x.date);}
+  return {data,conflicts,average:mean(data.map(x=>x.value)),monthly:[...buckets.values()].sort((a,b)=>a.label.localeCompare(b.label)).map(b=>({label:b.label,value:mean(b.values),dates:b.dates,sample:b.values.length})),distribution};
+}
+function isoWeekStart(name){
+  const m=String(name||'').match(/^(\d{4})-W(\d{2})(?=$|\D)/i);if(!m)return null;
+  const year=Number(m[1]),week=Number(m[2]);if(week<1||week>53)return null;
+  const jan4=Math.floor(Date.UTC(year,0,4)/DAY),offset=(new Date(jan4*DAY).getUTCDay()+6)%7,start=jan4-offset+7*(week-1);
+  if(new Date((start+3)*DAY).getUTCFullYear()!==year)return null;
+  return {start:dayKey(start),end:dayKey(start+6),label:String(year)+'-W'+String(week).padStart(2,'0')};
+}
+function weekly(rows){
+  const groups=new Map();for(const row of rows){const w=isoWeekStart(row.file?.basename);if(!w)continue;if(!groups.has(w.start))groups.set(w.start,{...w,records:[],values:Object.fromEntries(CATEGORIES.map(c=>[c.key,new Set()]))});const g=groups.get(w.start);g.records.push(row);const data=row.wheel&&typeof row.wheel==='object'&&!Array.isArray(row.wheel)?row.wheel:{};for(const c of CATEGORIES){const v=score(data[c.key]);if(v!==null)g.values[c.key].add(v);}}
+  return [...groups.values()].sort((a,b)=>a.start.localeCompare(b.start)).map(g=>{let conflicts=0;const values={};for(const c of CATEGORIES){const set=g.values[c.key];if(set.size===1)values[c.key]=[...set][0];else{values[c.key]=null;if(set.size>1)conflicts++;}}return {start:g.start,end:g.end,label:g.label,records:g.records,values,conflicts};});
+}
+function selectedWeeks(weeks,range,today){return weeks.filter(w=>{if(w.start>today)return false;const anchor=shift(w.start,3),inRange=anchor>=range.start&&anchor<=range.end,ongoing=range.end===today&&w.start<=today&&w.end>=today&&anchor>today&&w.start<=range.end&&w.end>=range.start;return inRange||ongoing;});}
+function wheelSummary(weeks){return CATEGORIES.map(c=>{const values=weeks.map(w=>w.values[c.key]).filter(v=>v!==null);return {...c,value:mean(values),count:values.length};});}
+function bucketFor(w,period){const anchor=shift(w.start,3),year=anchor.slice(0,4),month=Number(anchor.slice(5,7));if(period==='weekly')return {label:w.label,start:w.start};if(period==='quarterly')return {label:year+'-Q'+Math.ceil(month/3),start:year+'-'+String(Math.floor((month-1)/3)*3+1).padStart(2,'0')+'-01'};if(period==='yearly')return {label:year,start:year+'-01-01'};return {label:anchor.slice(0,7),start:anchor.slice(0,7)+'-01'};}
+function wheelTimeline(weeks,period,category){
+  const groups=new Map();for(const w of weeks){const b=bucketFor(w,period);if(!groups.has(b.label))groups.set(b.label,{...b,values:[],weeks:[]});const g=groups.get(b.label),v=w.values[category];if(v!==null){g.values.push(v);g.weeks.push(w);}}
+  return [...groups.values()].sort((a,b)=>a.start.localeCompare(b.start)).map(g=>({label:g.label,start:g.start,value:mean(g.values),count:g.values.length,weeks:g.weeks}));
+}
+function hasJournal(day){return !!day&&(day.words>0||(day.records||[]).some(e=>Array.isArray(e.photos)&&e.photos.length>0));}
+function journalStreak(days,today){
+  const valid=[...days.values()].filter(d=>d.date&&d.date<=today&&hasJournal(d)).sort((a,b)=>a.date.localeCompare(b.date));let longest=0,run=0,last=null;
+  for(const d of valid){run=last&&shift(d.date,-1)===last?run+1:1;longest=Math.max(longest,run);last=d.date;}
+  let cursor=today;if(!hasJournal(days.get(cursor)))cursor=shift(cursor,-1);let current=0,photoOnly=0;
+  while(hasJournal(days.get(cursor))){if(!(days.get(cursor).words>0))photoOnly++;current++;cursor=shift(cursor,-1);}
+  return {current,longest,photoOnly,breakDate:cursor,breakHasNote:days.has(cursor)};
+}
+module.exports={CATEGORIES,dayNumber,dayKey,shift,score,ratings,isoWeekStart,weekly,selectedWeeks,wheelSummary,bucketFor,wheelTimeline,hasJournal,journalStreak};
+
+return module.exports;})();
+const cleanupModule = (()=>{const module={exports:{}};
+'use strict';
+function cleanEmptySections(raw,{isTemplate=false,mask}={}){
+  if(typeof mask!=='function')return {text:raw,quick:0,qa:0};
+  const lines=raw.match(/[^\n]*\n|[^\n]+$/g)||[],masked=mask(raw).match(/[^\n]*\n|[^\n]+$/g)||[],remove=new Set();let quick=0,qa=0;
+  const line=i=>(lines[i]||'').replace(/\r?\n$/,'');const visible=i=>(masked[i]||'').replace(/\r?\n$/,'');
+  const heading=i=>/^\s{0,3}#{1,6}\s+/.test(visible(i));
+  const mark=(i)=>{remove.add(i);if(line(i+1).trim()==='---')remove.add(i+1)};
+  for(let i=0;i<lines.length;i++){
+    if(/^\s{0,3}#{1,6}\s+[^\r\n]*\bQuick Notes\s*#*\s*$/i.test(visible(i))){
+      let j=i+1,marker=-1;for(;j<lines.length&&!heading(j);j++){if(/^\s*<p\s+hidden\s*>placer<\/p>\s*$/i.test(line(j))){marker=j;break;}}
+      if(marker<0)continue;const before=lines.slice(i+1,marker).map(x=>x.trim()).filter(x=>x&&x!=='---');if(before.length)continue;mark(i);quick++;
+    }else if(/^\s{0,3}#{1,6}\s+Q&A\s*#*\s*$/i.test(visible(i))){
+      let j=i+1;while(j<lines.length&&!heading(j))j++;let body=lines.slice(i+1,j);
+      if(isTemplate){const t=body.findIndex(x=>/^\s*<%\*/.test(x));if(t>=0)body=body.slice(0,t);}
+      if(body.some(x=>{const value=x.trim();return value&&value!=='---';}))continue;mark(i);qa++;
+    }
+  }
+  return {text:lines.filter((_,i)=>!remove.has(i)).join(''),quick,qa};
+}
+async function run(plugin,{mask,Notice,TFile}){
+  if(plugin.cleanupRunning)return null;plugin.cleanupRunning=true;
+  try{
+    const folder=(plugin.settings.dailyFolder||'').replace(/^\/+|\/+$/g,''),vault=plugin.app.vault,files=vault.getMarkdownFiles().filter(f=>folder&&f.path.startsWith(folder+'/'));
+    const template=vault.getAbstractFileByPath?.('06 Templates/Parents/Daily.md');if(template instanceof TFile&&!files.some(f=>f.path===template.path))files.push(template);
+    const changes=[];for(const file of files){const before=await vault.read(file),isTemplate=file.path==='06 Templates/Parents/Daily.md',plan=cleanEmptySections(before,{isTemplate,mask});if(plan.quick||plan.qa)changes.push({file,before,...plan});}
+    if(!changes.length){new Notice('No empty Quick Notes or Q&A sections found.');return {updated:0,quick:0,qa:0,concurrent:0,failed:0};}
+    const adapter=vault.adapter,base='.archive',stamp=new Date().toISOString().replace(/[^0-9]/g,'').slice(0,17),dir=base+'/journal-insights-daily-cleanup-'+stamp;
+    if(!await adapter.exists(base))await adapter.mkdir(base);if(await adapter.exists(dir))throw new Error('Backup directory already exists.');await adapter.mkdir(dir);
+    const backup=JSON.stringify({created:new Date().toISOString(),files:changes.map(x=>({path:x.file.path,text:x.before}))});await adapter.write(dir+'/before.json',backup);if(await adapter.read(dir+'/before.json')!==backup)throw new Error('Backup verification failed.');
+    const report={updated:0,quick:0,qa:0,concurrent:0,failed:0,backup:dir+'/before.json'};
+    for(let i=0;i<changes.length;i++){const change=changes[i];let updated=false;try{await vault.process(change.file,current=>{if(current!==change.before){report.concurrent++;return current;}updated=true;return change.text;});if(updated){report.updated++;report.quick+=change.quick;report.qa+=change.qa;}}catch(error){report.failed++;}if(i%20===19)await new Promise(resolve=>setTimeout(resolve,10));}
+    try{await adapter.write(dir+'/report.json',JSON.stringify(report,null,2));}catch(error){console.error('Journal Insights cleanup report could not be saved',error);}
+    new Notice('Cleaned '+report.updated+' files; '+report.concurrent+' changed during cleanup and '+report.failed+' failed. Backup: '+dir,15000);return report;
+  }catch(error){console.error('Journal Insights cleanup failed',error);new Notice('Cleanup stopped. Check the console and any existing backup.',12000);return null;}finally{plugin.cleanupRunning=false;}
+}
+module.exports={cleanEmptySections,run};
+
+return module.exports;})();
 
 const VIEW = 'journal-insights-view';
-const DEFAULTS = { dailyFolder: '01 Daily' };
+const DEFAULTS = { dailyFolder: '01 Daily', weeklyFolder: '02 Weekly' };
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function validDate(y, m, d) {
@@ -332,7 +426,7 @@ class JournalView extends ItemView {
   constructor(leaf,plugin) {
     super(leaf); this.plugin=plugin; this.tab='home'; this.query='';
     this.year=String(new Date().getFullYear()); this.entryYear='all'; this.limit=36;
-    this.generation=0; this.entries=[]; this.memoryDate=localKey(new Date()); this.selectedDay=null;
+    this.generation=0; this.entries=[]; this.weekEntries=[]; this.memoryDate=localKey(new Date()); this.selectedDay=null;
   }
   getViewType(){return VIEW;}
   getDisplayText(){return 'Journal Insights';}
@@ -342,8 +436,11 @@ class JournalView extends ItemView {
   async refresh(){
     const generation=++this.generation;
     if(!this.entries.length){this.contentEl.empty();el(this.contentEl,'div','ji-loading','Reading your journal...');}
-    const files=this.app.vault.getMarkdownFiles().filter(f=>underFolder(f.path,this.plugin.settings.dailyFolder));
-    const rows=[]; let cursor=0,failed=0;
+    const allFiles=this.app.vault.getMarkdownFiles();
+    const files=allFiles.filter(f=>underFolder(f.path,this.plugin.settings.dailyFolder));
+    const weeklyFolder=typeof this.plugin.settings.weeklyFolder==='string'?this.plugin.settings.weeklyFolder:DEFAULTS.weeklyFolder;
+    const weeklyFiles=allFiles.filter(f=>underFolder(f.path,weeklyFolder));
+    const rows=[],weekRows=[]; let cursor=0,weekCursor=0,failed=0;
     const worker=async()=>{
       while(cursor<files.length){
         const file=files[cursor++];
@@ -351,14 +448,15 @@ class JournalView extends ItemView {
           const raw=await this.app.vault.cachedRead(file);
           const cache=this.app.metadataCache.getFileCache(file);
           const text=cleanText(raw);
-          rows.push({file,date:dateFromFile(file,(cache&&cache.frontmatter)||{}),kind:'daily',text,words:countWords(text),photos:photoModule.parsePhotos(raw),private:!!(cache&&cache.frontmatter&&(cache.frontmatter.private===true||cache.frontmatter['journal-insights-hide']===true))});
+          rows.push({file,date:dateFromFile(file,(cache&&cache.frontmatter)||{}),kind:'daily',text,words:countWords(text),rating:metricsModule.score(cache?.frontmatter?.dayRating),photos:photoModule.parsePhotos(raw),private:!!(cache&&cache.frontmatter&&(cache.frontmatter.private===true||cache.frontmatter['journal-insights-hide']===true))});
         }catch(error){failed++;}
       }
     };
-    await Promise.all(Array.from({length:Math.min(12,files.length)},()=>worker()));
+    const weekWorker=async()=>{while(weekCursor<weeklyFiles.length){const file=weeklyFiles[weekCursor++];try{const cache=this.app.metadataCache.getFileCache(file);weekRows.push({file,wheel:cache?.frontmatter?.wheelOfLife||null});}catch(error){failed++;}}};
+    await Promise.all([...Array.from({length:Math.min(12,files.length)},()=>worker()),...Array.from({length:Math.min(8,weeklyFiles.length)},()=>weekWorker())]);
     if(generation!==this.generation)return;
     rows.sort((a,b)=>(b.date||'').localeCompare(a.date||'')||a.file.path.localeCompare(b.file.path));
-    this.entries=rows; this.failed=failed;
+    this.entries=rows; this.weekEntries=weekRows; this.failed=failed;
     this.sameDateCounts=new Map();
     for(const row of rows){const key=row.date;this.sameDateCounts.set(key,(this.sameDateCounts.get(key)||0)+1);}
     this.render();
@@ -386,7 +484,7 @@ class JournalView extends ItemView {
     for(const entry of items){
       const item=el(grid,'article','ji-card-item'+(compact?' is-compact':''));
       const card=button(item,'',()=>this.app.workspace.getLeaf('tab').openFile(entry.file),'ji-card'+(compact?' is-compact':''));
-      const meta=el(card,'div','ji-card-meta');el(meta,'span','',formatNumber(entry.words)+' words');
+      const meta=el(card,'div','ji-card-meta');el(meta,'span','',formatNumber(entry.words)+' words');if(entry.rating!==null&&entry.rating!==undefined)el(meta,'span','','Rating '+formatNumber(entry.rating)+' / 10');
       el(card,'h3','ji-card-date',formatDate(entry.date));
       el(card,'p','ji-card-preview',entry.text?(entry.text.slice(0,220)+(entry.text.length>220?'...':'')):'No text to preview yet.');
       if(entry.date&&(this.sameDateCounts.get(entry.date)||0)>1)el(card,'span','ji-conflict','Multiple entries on this date');
@@ -493,6 +591,7 @@ class JournalSettings extends PluginSettingTab {
     const c=this.containerEl;c.empty();el(c,'h2','','Journal Insights');
     new Setting(c).setName('Open at startup').setDesc('Show Journal Insights after Obsidian restores the workspace.').addToggle(t=>t.setValue(this.plugin.settings.openOnStartup).onChange(async value=>{this.plugin.settings.openOnStartup=value;await this.plugin.saveSettings();}));
     new Setting(c).setName('Daily folder').setDesc('Folder path relative to the vault.').addText(t=>t.setValue(this.plugin.settings.dailyFolder).onChange(async value=>{this.plugin.settings.dailyFolder=value.trim().replace(/^\/+|\/+$/g,'');await this.plugin.saveSettings();}));
+    new Setting(c).setName('Weekly folder').setDesc('Folder containing Wheel of Life weekly notes.').addText(t=>t.setValue(this.plugin.settings.weeklyFolder).onChange(async value=>{this.plugin.settings.weeklyFolder=value.trim().replace(/^\/+|\/+$/g,'');await this.plugin.saveSettings();}));
     new Setting(c).setName('Repair Pixel Banner properties').setDesc('Backs up affected notes and fixes legacy banner formatting.').addButton(b=>b.setButtonText('Repair banners').onClick(()=>this.plugin.repairBanners()));
     el(c,'p','ji-settings-note','Analytics use estimated words. Conflicting Daily versions are counted once per date using the longest version.');
   }
@@ -512,9 +611,10 @@ class JournalInsights extends Plugin {
     this.addRibbonIcon('book-heart','Open Journal Insights',()=>this.activateView());
     this.addCommand({id:'open-journal-insights',name:'Open Journal Insights',callback:()=>this.activateView()});
     this.addCommand({id:'repair-pixel-banner-properties',name:'Repair Pixel Banner properties',callback:()=>this.repairBanners()});
+    this.addCommand({id:'clean-empty-daily-sections',name:'Clean empty Daily sections',callback:()=>this.cleanupDailySections()});
     this.addSettingTab(new JournalSettings(this.app,this));
     const schedule=()=>{clearTimeout(this.refreshTimer);this.refreshTimer=setTimeout(()=>this.app.workspace.getLeavesOfType(VIEW).forEach(leaf=>leaf.view.refresh()),1500);};
-    const relevant=p=>underFolder(p,this.settings.dailyFolder);
+    const relevant=p=>underFolder(p,this.settings.dailyFolder)||underFolder(p,this.settings.weeklyFolder);
     const isImage=path=>/\.(?:png|jpe?g|gif|webp|avif|svg|bmp|heic|heif|tiff?)$/i.test(path);
     const changed=file=>{if(file instanceof TFile&&(relevant(file.path)||isImage(file.path)))schedule();};
     this.registerEvent(this.app.vault.on('create',changed));this.registerEvent(this.app.vault.on('modify',changed));this.registerEvent(this.app.vault.on('delete',changed));
@@ -536,6 +636,7 @@ class JournalInsights extends Plugin {
     if(!leaf){leaf=this.app.workspace.getLeaf('tab');await leaf.setViewState({type:VIEW,active:true});}
     await this.app.workspace.revealLeaf(leaf);
   }
+  async cleanupDailySections(){return cleanupModule.run(this,{mask:photoModule.maskNonContent,Notice,TFile});}
   async repairBanners(){
     if(this.repairRunning){new Notice('Banner repair is already running.');return;}
     this.repairRunning=true;new Notice('Checking Pixel Banner properties...');
@@ -636,7 +737,7 @@ function heatValue(day,mode){return !day?0:mode==='days'?(day.words>0?1:0):mode=
 function levelFor(value,mode,heatLevel){return mode==='days'?(value?4:0):mode==='entries'?Math.min(4,value):heatLevel(value);}
 function memoryEligible(e,excluded){return !!(e.date&&(e.words>0||(e.photos&&e.photos.length))&&!e.private&&!excluded.includes(e.file.path));}
 
-function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice}) {
+function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice,metrics}) {
   const methods={
     prefs(){
       if(!this.experienceReady){
@@ -696,7 +797,7 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
           const h=this.title(section,'','Recent Entries');button(h,'View all',()=>this.navigate('entries'),'ji-link');this.cards(section,entries.filter(e=>e.words>0||(e.photos&&e.photos.length)).slice(0,3),true);
         }else if(id==='activity'){
           const h=this.title(section,'','Writing Activity');this.yearControl(h,entries);this.heatmap(section,stats,Number(this.year));
-        }else{this.title(section,'','At a Glance');const grid=el(section,'div','ji-stats');this.metric(grid,n(stats.active.length),'Writing days','Unique dates with text');this.metric(grid,n(stats.words),'Words written','Estimated, through today');this.metric(grid,n(stats.streak),'Current streak','Through today or yesterday');this.metric(grid,n(stats.longest),'Longest streak','Consecutive writing days');button(section,'View insights',()=>this.navigate('insights'),'ji-link');}
+        }else{this.title(section,'','At a Glance');const grid=el(section,'div','ji-stats'),streak=metrics.journalStreak(stats.days,localKey(new Date()));this.metric(grid,n(stats.active.length),'Writing days','Unique dates with text');this.metric(grid,n(stats.words),'Words written','Estimated, through today');this.metric(grid,n(streak.current),'Current streak','Days with text or linked images, through today or yesterday');this.metric(grid,n(streak.longest),'Longest streak','Consecutive days with text or linked images');const details=el(section,'details','ji-heat-about');el(details,'summary','','Streak details');el(details,'p','ji-settings-help','A journal day has text or at least one linked image. Empty templates do not count. '+(streak.current?'Current streak includes '+n(streak.photoOnly)+' photo-only '+(streak.photoOnly===1?'day.':'days.'):'No current streak.')+(streak.breakHasNote?' Last break: '+fd(streak.breakDate)+' (note has no text or linked images).':' Last break: '+fd(streak.breakDate)+' (no daily note).'));button(section,'View insights',()=>this.navigate('insights'),'ji-link');}
       }
       if(prefs.hidden.length===HOME.length){el(root,'p','ji-empty','All Home sections are hidden.');button(root,'Open Settings',()=>this.navigate('settings'),'ji-button');}
       this.renderDrill(root);
@@ -759,23 +860,25 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
 
       const advanced=el(settings,'section','ji-settings-section');el(advanced,'h3','ji-settings-title','Folder');
       const folderInputs={};
-      for(const [key,label] of [['dailyFolder','Daily folder']]){
+      for(const [key,label] of [['dailyFolder','Daily folder'],['weeklyFolder','Weekly folder']]){
         const lab=el(advanced,'label','ji-folder-row');el(lab,'span','ji-setting-name',label);const input=el(lab,'input','ji-input');input.type='text';input.value=this.plugin.settings[key]||'';folderInputs[key]=input;
       }
       const error=el(advanced,'p','ji-settings-error');error.setAttribute('role','alert');
       button(advanced,'Save folder',async event=>{
         const b=event.currentTarget||event.target;
         const clean=value=>value.trim().replace(/\\/g,'/').replace(/^\/+|\/+$/g,'');
-        const daily=clean(folderInputs.dailyFolder.value);
+        const daily=clean(folderInputs.dailyFolder.value),weekly=clean(folderInputs.weeklyFolder.value);
         const exists=path=>path&&!path.split('/').some(part=>part==='.'||part==='..'||!part)&&this.app.vault.getAbstractFileByPath&&Array.isArray(this.app.vault.getAbstractFileByPath(path)?.children);
-        if(!exists(daily)){error.textContent='Choose an existing folder in this vault.';return;}
-        error.textContent='';b.disabled=true;const before={dailyFolder:this.plugin.settings.dailyFolder};Object.assign(this.plugin.settings,{dailyFolder:daily});
+        if(!exists(daily)||(weekly&&!exists(weekly))){error.textContent='Choose an existing Daily folder and, if supplied, an existing Weekly folder.';return;}
+        error.textContent='';b.disabled=true;const before={dailyFolder:this.plugin.settings.dailyFolder,weeklyFolder:this.plugin.settings.weeklyFolder};Object.assign(this.plugin.settings,{dailyFolder:daily,weeklyFolder:weekly});
         try{await this.plugin.saveSettings();}catch(e){Object.assign(this.plugin.settings,before);error.textContent='Could not save folders. Please try again.';b.disabled=false;return;}
         new Notice('Folder saved.');try{await this.refresh();}finally{b.disabled=false;}
       },'ji-button');
       const maintenance=el(settings,'details','ji-settings-details ji-maintenance');el(maintenance,'summary','','Maintenance');
       el(maintenance,'p','ji-settings-help','Repair legacy Pixel Banner properties with a backup.');
       button(maintenance,'Repair banners',()=>this.plugin.repairBanners(),'ji-button');
+      el(maintenance,'p','ji-settings-help','Remove empty Quick Notes and Q&A headings from Daily notes and the standard Daily template. Existing content and quick-note markers are preserved; a backup is created.');
+      button(maintenance,'Clean empty Daily sections',()=>this.plugin.cleanupDailySections(),'ji-button');
     },
     memoriesFor(entries,key){return entries.filter(e=>memoryEligible(e,this.prefs().excluded)&&e.date.slice(5)===key.slice(5)&&e.date.slice(0,4)<key.slice(0,4));},
     randomMemory(entries){
@@ -812,6 +915,7 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       const bins=mode==='days'?[[0,'No writing'],[4,'Writing day']]:mode==='entries'?[[0,'0'],[1,'1'],[2,'2'],[3,'3'],[4,'4+']]:[[0,'0'],[1,'1–99'],[2,'100–299'],[3,'300–699'],[4,'700+']];
       for(const [level,label] of bins){const item=el(legend,'span','ji-legend-item');el(item,'span','ji-legend-swatch ji-level-'+level);el(item,'span','',label);}el(legend,'span','ji-muted',mode==='words'?'words / day':mode==='entries'?'nonempty files / day':'');
       const future=el(legend,'span','ji-legend-item');el(future,'span','ji-legend-swatch is-future');el(future,'span','','Future');
+      const photoOnly=el(legend,'span','ji-legend-item');el(photoOnly,'span','ji-legend-swatch ji-photo-only');el(photoOnly,'span','','Photo-only day');
       const detail=el(root,'p','ji-heat-detail','');detail.setAttribute('role','status');
       const wrap=el(root,'div','ji-months'),today=localKey(new Date());
       for(let month=0;month<12;month++){
@@ -820,8 +924,9 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
         const offset=(new Date(year,month,1,12).getDay()+6)%7;for(let i=0;i<offset;i++)el(grid,'span','ji-day-spacer');
         for(let day=1;day<=new Date(year,month+1,0).getDate();day++){
           const key=validDate(year,month+1,day),record=stats.days.get(key),value=heatValue(record,mode),isFuture=key>today;
-          const label=fd(key)+': '+n(record?record.words:0)+' words · '+n(record?record.records.filter(e=>e.words>0).length:0)+' nonempty entries'+(isFuture?' · Future date':'');
-          const b=button(grid,String(day),()=>{this.selectedDay=key;if(this.tab!=='calendar'){this.tab='calendar';this.year=String(year);this.render();this.showDay(key,true);}else{this.showDay(key,true);for(const x of grid.querySelectorAll?wrap.querySelectorAll('[aria-pressed]'):[])x.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');}},'ji-day '+(isFuture?'is-future':'ji-level-'+levelFor(value,mode,heatLevel))+(key===today?' is-today':''));
+          const imageCount=record?record.records.reduce((sum,e)=>sum+(e.photos?.length||0),0):0;
+          const label=fd(key)+': '+n(record?record.words:0)+' words · '+n(imageCount)+' linked images · '+n(record?record.records.filter(e=>e.words>0).length:0)+' entries with text'+(isFuture?' · Future date':'');
+          const b=button(grid,String(day),()=>{this.selectedDay=key;if(this.tab!=='calendar'){this.tab='calendar';this.year=String(year);this.render();this.showDay(key,true);}else{this.showDay(key,true);for(const x of grid.querySelectorAll?wrap.querySelectorAll('[aria-pressed]'):[])x.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');}},'ji-day '+(isFuture?'is-future':'ji-level-'+levelFor(value,mode,heatLevel))+(!isFuture&&record&&!record.words&&imageCount?' ji-photo-only':'')+(key===today?' is-today':''));
           b.disabled=isFuture;b.title=label;b.setAttribute('aria-label',label);b.setAttribute('aria-pressed',String(this.selectedDay===key));if(key===today)b.setAttribute('aria-current','date');b.addEventListener('mouseenter',()=>detail.textContent=label);b.addEventListener('focus',()=>detail.textContent=label);
         }
       }
@@ -867,10 +972,11 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       if(this.rangeMode==='custom'){const tools=el(root,'div','ji-date-range');for(const [key,label] of [['start','From'],['end','Through']]){const lab=el(tools,'label','ji-date-label');el(lab,'span','',label);const input=el(lab,'input','ji-input');input.type='date';input.max=today;input.value=this.customRange[key]||'';input.addEventListener('change',()=>{this.customRange[key]=input.value;this.savePrefs({customRange:this.customRange});});}button(tools,'Apply dates',()=>{this.drill=null;this.render();},'ji-button');}
       const range=rangeFor(entries,this.rangeMode,Number(this.year),today,this.customRange);if(range.error){el(root,'p','ji-warning',range.error);return;}
       const d=analyze(entries,range,aggregateDays,today);el(root,'p','ji-period-caption',fd(range.start,{month:'short',day:'numeric',year:'numeric'})+' – '+fd(range.end,{month:'short',day:'numeric',year:'numeric'})+' · '+n(range.days)+' calendar days');
+      this.renderRatings(root,entries,range,today);this.renderWheel(root,range,today);
       const grid=el(root,'div','ji-stats ji-insight-stats');
       this.metric(grid,n(d.data.words),'Words written','Longest daily version per date');this.metric(grid,n(d.data.active.length),'Writing days','Unique dates with text');this.metric(grid,d.rate+'%','Consistency',n(d.data.active.length)+' of '+n(range.days)+' calendar days');this.metric(grid,n(d.average),'Words / writing day','Mean across active days');
       const secondary=el(root,'details','ji-more-metrics');secondary.open=true;el(secondary,'summary','','More about this period');const extra=el(secondary,'div','ji-stats ji-secondary-stats');
-      this.metric(extra,n(d.median),'Median day','Middle active-day word count');this.metric(extra,n(d.perCalendar),'Words / calendar day','Includes days without writing');this.metric(extra,n(d.data.longest),'Longest streak','Within the selected period');this.metric(extra,n(d.top[0]?d.top[0].words:0),'Longest day',d.top[0]?d.top[0].date:'No writing yet');this.metric(extra,n(d.records.filter(e=>e.words>0).length),'Nonempty files','Includes Daily conflict versions');this.metric(extra,n(aggregateDays(entries.filter(e=>e.date&&e.date<=today)).streak),'Current streak','All time, through today or yesterday');
+      this.metric(extra,n(d.median),'Median day','Middle active-day word count');this.metric(extra,n(d.perCalendar),'Words / calendar day','Includes days without writing');this.metric(extra,n(d.data.longest),'Longest writing streak','Text days within the selected period');this.metric(extra,n(d.top[0]?d.top[0].words:0),'Longest day',d.top[0]?d.top[0].date:'No writing yet');this.metric(extra,n(d.records.filter(e=>e.words>0).length),'Nonempty files','Includes Daily conflict versions');this.metric(extra,n(metrics.journalStreak(aggregateDays(entries.filter(e=>e.date&&e.date<=today)).days,today).current),'Current journal streak','All time; text or linked images, through today or yesterday');
       const compare=el(root,'div','ji-comparison');const delta=d.data.words-d.prev.words;el(compare,'strong','',d.prev.words?(delta>=0?'+':'')+n(Math.round(delta/d.prev.words*100))+'% words':'No percentage baseline');el(compare,'span','ji-muted',n(d.data.words)+' vs '+n(d.prev.words)+' words · previous '+n(range.days)+' days ('+d.previous.start+' – '+d.previous.end+'). Missing dates count as no recorded writing.');
       this.renderDrill(root);
       if(!d.data.active.length)el(root,'p','ji-empty','No writing in this period. Choose another date range.');
@@ -893,6 +999,65 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
 module.exports={install,rangeFor,analyze,keyDay,dayKey,shift,span,heatValue,levelFor,memoryEligible};
 
 return module.exports;})();
-experienceModule.install(JournalView,{el,button,formatNumber,formatDate,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice});
+experienceModule.install(JournalView,{el,button,formatNumber,formatDate,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice,metrics:metricsModule});
+(()=>{const module={exports:{}};
+'use strict';
+function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,metrics:m}){
+  const format=v=>v===null||v===undefined?'—':n(Math.round(v*10)/10);
+  const svgNode=(parent,tag,attrs,text)=>{const node=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,value] of Object.entries(attrs||{}))node.setAttribute(key,value);if(text!==undefined)node.textContent=text;parent.appendChild(node);return node;};
+  const methods={
+    ratingBars(root,title,items,max,unit,entries,description){
+      const panel=el(root,'section','ji-panel ji-chart-panel');this.title(panel,'',title);const chart=el(panel,'div','ji-bar-chart');chart.setAttribute('aria-label',title);
+      for(const item of items){const dates=new Set(item.dates||[]),found=entries.filter(e=>dates.has(e.date));const row=button(chart,'',()=>this.explore(title+' · '+item.label,found),'ji-bar-row ji-bar-button');row.disabled=!found.length;row.setAttribute('aria-label',item.label+': '+format(item.value)+' '+unit+(item.sample?' from '+item.sample+' days':'')+(found.length?'. Explore entries.':'.'));el(row,'span','ji-bar-label',item.label);const track=el(row,'span','ji-bar-track'),bar=el(track,'span','ji-bar');bar.style.width=(Math.max(0,item.value)/Math.max(1,max)*100)+'%';el(row,'span','ji-bar-value',format(item.value));}
+      el(panel,'p','ji-chart-unit','0 - '+format(max)+' '+unit);
+      const details=el(panel,'details','ji-chart-details');el(details,'summary','','View data');el(details,'p','ji-chart-description',description);const table=el(details,'table','ji-table'),head=el(table,'thead'),hr=el(head,'tr');for(const label of ['Period / group',unit,'Rated days','Entries']){const th=el(hr,'th','',label);th.setAttribute('scope','col');}const body=el(table,'tbody');for(const item of items){const tr=el(body,'tr');el(tr,'td','',item.label);el(tr,'td','',format(item.value));el(tr,'td','',n(item.sample??item.dates?.length??0));const td=el(tr,'td'),dates=new Set(item.dates||[]),found=entries.filter(e=>dates.has(e.date));if(found.length)button(td,'Explore',()=>this.explore(title+' · '+item.label,found),'ji-link');else el(td,'span','ji-muted','—');}
+    },
+    renderRatings(root,entries,range,today){
+      const result=m.ratings(entries,range,today),section=el(root,'section','ji-insight-group');this.title(section,'','Daily ratings');
+      if(!result.data.length){el(section,'p','ji-empty','No unambiguous daily ratings in this period.');if(result.conflicts.length){const rows=result.conflicts.flatMap(x=>x.records);button(section,'View conflicting ratings',()=>this.explore('Conflicting ratings',rows),'ji-button');}return;}
+      const grid=el(section,'div','ji-stats ji-score-stats'),last=result.data[result.data.length-1];this.metric(grid,format(result.average)+' / 10','Average rating','Average of unambiguous daily scores');this.metric(grid,n(result.data.length),'Rated days','One saved score per date');this.metric(grid,format(last.value)+' / 10','Latest rating',fd(last.date));this.metric(grid,(Math.round(result.data.length/range.days*1000)/10)+'%','Rating coverage','Rated days divided by calendar days in the selected range');
+      if(result.conflicts.length){const conflictEntries=result.conflicts.flatMap(x=>x.records);const warning=el(section,'p','ji-warning',n(result.conflicts.length)+' dates have conflicting ratings and are excluded. ');button(warning,'View entries',()=>this.explore('Conflicting ratings',conflictEntries),'ji-link');}
+      const charts=el(section,'div','ji-charts');this.ratingBars(charts,'Average rating by month',result.monthly,10,'score / 10',entries,'Mean of saved 1–10 scores for each month; dates with conflicting scores are excluded. Months with no scores are omitted.');
+      this.ratingBars(charts,'Rating distribution',result.distribution,Math.max(1,...result.distribution.map(x=>x.value)),'days',entries,'Number of rated dates at each score. Decimal scores, if present, are grouped into the displayed ranges.');
+      const info=el(section,'details','ji-method');el(info,'summary','','About ratings');el(info,'p','ji-muted','A saved 1–10 value counts as a rating, including 1. Some templates may save a default value; the plugin cannot determine whether a value was intentional. Missing, out-of-range, and conflicting values are not counted.');
+    },
+    wheelRadar(root,summary){
+      const svg=svgNode(root,'svg',{viewBox:'0 0 440 380',class:'ji-wheel-svg',role:'img','aria-label':'Wheel of Life averages. '+summary.map(c=>c.label+': '+(c.value===null?'no data':format(c.value)+' out of 10')).join('; ')});
+      const cx=220,cy=190,r=112,point=(i,value,scale=1)=>{const a=-Math.PI/2+i*Math.PI/4;return [cx+Math.cos(a)*r*value/10*scale,cy+Math.sin(a)*r*value/10*scale]};
+      for(const step of [2,4,6,8,10])svgNode(svg,'circle',{cx,cy,r:r*step/10,class:'ji-wheel-grid'});
+      summary.forEach((cat,i)=>{const [x,y]=point(i,10);svgNode(svg,'line',{x1:cx,y1:cy,x2:x,y2:y,class:'ji-wheel-axis'});const [lx,ly]=point(i,10,1.25),anchor=lx<cx-8?'end':lx>cx+8?'start':'middle';svgNode(svg,'text',{x:lx,y:ly+4,'text-anchor':anchor,class:'ji-wheel-label'},cat.label);});
+      if(summary.every(c=>c.value!==null)){const points=summary.map((c,i)=>point(i,c.value).map(x=>x.toFixed(1)).join(',')).join(' ');svgNode(svg,'polygon',{points,class:'ji-wheel-polygon'});}
+      summary.forEach((cat,i)=>{if(cat.value===null)return;const [x,y]=point(i,cat.value),p=svgNode(svg,'circle',{cx:x,cy:y,r:4,class:'ji-wheel-point'});svgNode(p,'title',{},cat.label+': '+format(cat.value)+' / 10 · '+n(cat.count)+' weeks');});
+    },
+    wheelTrend(root,items,period,category){
+      const panel=el(root,'section','ji-panel ji-chart-panel ji-chart-wide');this.title(panel,'','Wheel of Life over time');
+      const data=items.filter(x=>x.value!==null);if(!data.length){el(panel,'p','ji-empty','No scores for this category in this period.');return;}
+      const W=620,H=220,L=44,R=20,T=15,B=35,svg=svgNode(panel,'svg',{viewBox:'0 0 '+W+' '+H,class:'ji-line-chart',role:'img','aria-label':category+' Wheel of Life trend, '+period+'. Exact values and source notes are in View data.'});
+      const y=v=>H-B-v/10*(H-T-B),starts=items.map(x=>m.dayNumber(x.start)),min=starts[0],max=starts[starts.length-1],x=(v)=>L+(max===min?(W-L-R)/2:(v-min)/(max-min)*(W-L-R));
+      for(const tick of [0,5,10]){svgNode(svg,'line',{x1:L,x2:W-R,y1:y(tick),y2:y(tick),class:'ji-chart-gridline'});svgNode(svg,'text',{x:L-8,y:y(tick)+4,'text-anchor':'end',class:'ji-axis-text'},String(tick));}
+      const adjacent=(a,b)=>{if(period==='weekly')return m.dayNumber(b.start)-m.dayNumber(a.start)===7;if(period==='yearly')return Number(b.label)-Number(a.label)===1;const aY=Number(a.start.slice(0,4)),bY=Number(b.start.slice(0,4)),aM=Number(a.start.slice(5,7)),bM=Number(b.start.slice(5,7));return (bY-aY)*12+bM-aM===(period==='quarterly'?3:1);};
+      let run=[];const flush=()=>{if(run.length>1)svgNode(svg,'polyline',{points:run.map(p=>x(m.dayNumber(p.start))+','+y(p.value)).join(' '),class:'ji-chart-line'});run=[];};
+      for(const item of items){if(item.value===null){flush();continue;}if(run.length&&!adjacent(run[run.length-1],item))flush();run.push(item);const c=svgNode(svg,'circle',{cx:x(m.dayNumber(item.start)),cy:y(item.value),r:3.5,class:'ji-wheel-point'});svgNode(c,'title',{},item.label+': '+format(item.value)+' / 10 · '+n(item.count)+' weeks');}flush();
+      for(const i of [...new Set([0,Math.floor((items.length-1)/2),items.length-1])])svgNode(svg,'text',{x:x(starts[i]),y:H-10,'text-anchor':i===0?'start':i===items.length-1?'end':'middle',class:'ji-axis-text'},items[i].label);
+      const details=el(panel,'details','ji-chart-details');el(details,'summary','','View data');const table=el(details,'table','ji-table'),head=el(table,'thead'),hr=el(head,'tr');for(const label of ['Period','Score / 10','Scored weeks','Source notes']){const th=el(hr,'th','',label);th.setAttribute('scope','col');}const tbody=el(table,'tbody');
+      for(const item of items){const tr=el(tbody,'tr');el(tr,'td','',item.label);el(tr,'td','',format(item.value));el(tr,'td','',n(item.count));const cell=el(tr,'td'),records=item.weeks.flatMap(w=>w.records.map(row=>({label:w.label,file:row.file})));if(records.length){const group=el(cell,'details','ji-source-notes');el(group,'summary','',n(records.length)+' notes');for(const record of records)button(group,record.label,()=>this.app.workspace.getLeaf('tab').openFile(record.file),'ji-link');}else el(cell,'span','ji-muted','—');}
+    },
+    renderWheel(root,range,today){
+      const section=el(root,'section','ji-insight-group');this.title(section,'','Wheel of Life');const weeks=m.selectedWeeks(m.weekly(this.weekEntries||[]),range,today),summary=m.wheelSummary(weeks),scored=weeks.filter(w=>Object.values(w.values).some(v=>v!==null));
+      if(!scored.length){el(section,'p','ji-empty','No valid weekly Wheel of Life scores in this period.');return;}
+      el(section,'p','ji-period-caption','Average across '+n(scored.length)+' weekly '+(scored.length===1?'note':'notes')+' with scores.');
+      const layout=el(section,'div','ji-wheel-layout'),visual=el(layout,'div','ji-panel ji-wheel-visual');this.wheelRadar(visual,summary);const list=el(layout,'div','ji-panel ji-wheel-scores');
+      for(const cat of summary){const row=el(list,'div','ji-wheel-score');el(row,'span','ji-wheel-score-label',cat.label);const track=el(row,'span','ji-bar-track');if(cat.value!==null){const bar=el(track,'span','ji-bar');bar.style.width=(cat.value/10*100)+'%';}const v=el(row,'span','ji-wheel-score-value',format(cat.value));v.title=n(cat.count)+' weeks';row.setAttribute('aria-label',cat.label+': '+(cat.value===null?'No data':format(cat.value)+' out of 10, '+n(cat.count)+' weeks'));}
+      const conflicts=weeks.reduce((s,w)=>s+w.conflicts,0);if(conflicts)el(section,'p','ji-warning',n(conflicts)+' conflicting weekly category scores are excluded.');
+      const controls=el(section,'div','ji-wheel-controls'),period=el(controls,'select','ji-select');period.setAttribute('aria-label','Wheel of Life grouping');for(const [id,label] of [['weekly','Weekly'],['monthly','Monthly'],['quarterly','Quarterly'],['yearly','Yearly']]){const o=el(period,'option','',label);o.value=id;}period.value=this.wheelPeriod||'monthly';period.addEventListener('change',()=>{this.wheelPeriod=period.value;this.render();});
+      const category=el(controls,'select','ji-select');category.setAttribute('aria-label','Wheel of Life category');for(const cat of m.CATEGORIES){const o=el(category,'option','',cat.label);o.value=cat.key;}this.wheelCategory=this.wheelCategory||summary.find(x=>x.value!==null)?.key||m.CATEGORIES[0].key;category.value=this.wheelCategory;category.addEventListener('change',()=>{this.wheelCategory=category.value;this.render();});
+      this.wheelTrend(section,m.wheelTimeline(weeks,this.wheelPeriod||'monthly',this.wheelCategory),this.wheelPeriod||'monthly',m.CATEGORIES.find(x=>x.key===this.wheelCategory)?.label||'Score');
+      const info=el(section,'details','ji-method');el(info,'summary','','About Wheel of Life');el(info,'p','ji-muted','Scores are read from weekly note properties. Each category is averaged only across weeks with a valid 1–10 value; missing values are not zeros. Duplicate weeks with conflicting values are excluded for that category. Weeks are assigned to dates by their Thursday, so they are counted once across months, quarters and years. If the selected period ends today, the current unfinished week is also included when it has scores.');
+    }
+  };Object.assign(JournalView.prototype,methods);
+}
+module.exports={install};
+
+return module.exports;})().install(JournalView,{el,button,formatNumber,formatDate,localKey,metrics:metricsModule});
 module.exports=JournalInsights;
 module.exports._test={validDate,localKey,dateFromFile,underFolder,cleanText,countWords,groupStats,aggregateDays,heatLevel,buildCharts,extractImage,repairBanner,JournalView};

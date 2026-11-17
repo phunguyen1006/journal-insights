@@ -1,4 +1,4 @@
-# Journal Insights 0.6.0
+# Journal Insights 0.7.0
 
 A theme-aware, local dashboard for daily journals. All interface text is English; original journal writing is never translated or rewritten.
 
@@ -38,6 +38,7 @@ The dashboard reads notes from the configured daily folder on your device. It do
 - Writing Days is binary: no recorded writing / some recorded writing.
 - Entries counts nonempty source files (including Daily conflict versions): 0, 1, 2, 3, 4+.
 - Future dates use dashed outlines and cannot be selected. Today and the selected date have distinct outlines.
+- A photo-only day has an accent outline even in the Words view; hover or focus a day for its word and linked-image counts.
 - Hover or focus a day for exact counts; click it to show original notes. Filters and the selected year persist.
 
 ## Pictures
@@ -52,6 +53,10 @@ The dashboard reads notes from the configured daily folder on your device. It do
 ## Insights
 
 Periods: last 30 days, last 90 days, selected year, all time, or custom dates. Future dates are excluded; custom end dates after today are capped at today.
+
+**Daily ratings** summarizes valid `dayRating` values on a 1–10 scale, with monthly means, score distribution, rated-day coverage, and source-entry links. Missing and invalid values are omitted. Conflicting scores on the same date are excluded and can be inspected. A stored score of 1 is included: the plugin cannot know whether it was intentionally selected or saved as a template default.
+
+**Wheel of Life** reads `wheelOfLife` category values from weekly notes in the configured Weekly folder. It shows a radar chart, per-category averages and a trend grouped by week, month, quarter or year. Missing category values are excluded, not interpreted as zero. Duplicate weekly notes with conflicting category values are omitted for that category. A week is assigned to the month, quarter and year containing its Thursday; the current unfinished week can appear in a range ending today. Monthly, quarterly and yearly Time Garden charts are derived from weekly data, so they are not counted a second time.
 
 Ten metrics: estimated words, writing days, consistency, mean words per writing day, median words per active day, mean words per calendar day, longest streak within the period, longest day, nonempty files, and current streak across all time.
 
@@ -72,19 +77,21 @@ Bar charts open source entries on click. Every chart has **View data**, includin
 
 - Word counts are estimates from journal text after removing frontmatter and common template/UI markup.
 - Conflicting Daily files are counted once per date using the longest version; their text is never merged.
-- A writing day has at least one estimated word. Images alone do not count as writing.
+- A writing day has at least one estimated word. Images alone do not count as writing. Journal streaks count a day with text or at least one linked image; empty templates do not count. The current streak includes today or, when today has no entry, yesterday.
 - Consistency = active dates / calendar dates in the selected range. Selected-year ranges begin January 1, even if the first note is later. All time starts at the earliest recognized nonfuture note date.
 - Weekday rate = active dates on a weekday / occurrences of that weekday in the selected range.
 - The previous-period comparison uses the immediately preceding equal number of calendar days. Missing dates mean no recorded writing; zero previous words displays no percentage baseline.
-- Undated and future-dated notes are excluded from analytics. Current streak includes today, or yesterday if today has no writing. Range streak is limited to the selected period.
+- Undated and future-dated notes are excluded from analytics. Current journal streak includes today, or yesterday if today has no text or linked images. The period's writing streak counts text days within the selected period.
 - No mood, wellbeing, or writing duration is inferred.
 
 ## Startup and settings
 
-**Settings** contains the Home layout, hidden Memories, startup toggle, the daily folder path, and banner maintenance. Open at startup remains enabled by default. Folder changes require existing folders and do not move files. Existing Obsidian community-plugin settings remain available. Dashboard preferences are stored in the plugin's own data file, not in journal notes.
+**Settings** contains the Home layout, hidden Memories, startup toggle, Daily and Weekly folder paths, and maintenance. Open at startup remains enabled by default. Folder changes require existing folders and do not move files. Existing Obsidian community-plugin settings remain available. Dashboard preferences are stored in the plugin's own data file, not in journal notes.
 
 ## Maintenance
 
-`core.js` contains vault reading, parsing and the guarded banner repair. `experience.js` contains dashboard rendering and analytics. `photos.js` recognizes and displays images; `editor-gallery.js` handles note display. Run `node build.cjs` to create the self-contained `main.js`; Obsidian does not need to load local helper modules. `styles.css` is the combined stylesheet. Run `node test.cjs`, `node analytics-test.cjs`, `node settings-test.cjs`, `node photos-test.cjs`, and `node integration-test.cjs` for regression checks. The integration test deliberately simulates a failed backup and logs that expected error before PASS.
+`core.js` contains vault reading, parsing and the guarded banner repair. `experience.js` contains dashboard rendering and analytics. `metrics.js` and `insight-extras.js` calculate and display ratings and Wheel of Life results. `photos.js` recognizes and displays images; `editor-gallery.js` handles note display. Run `node build.cjs` to create the self-contained `main.js`; Obsidian does not need to load local helper modules. `styles.css` is the combined stylesheet. Run `node test.cjs`, `node analytics-test.cjs`, `node settings-test.cjs`, `node photos-test.cjs`, `node metrics-test.cjs`, `node cleanup-test.cjs`, and `node integration-test.cjs` for regression checks. The integration test deliberately simulates a failed backup and logs that expected error before PASS.
 
 The dashboard upgrade does not edit journal text or banner properties. The separate repair command writes a verified backup and checks for concurrent changes before modifying any note.
+
+The optional **Clean empty Daily sections** command removes empty Quick Notes and Q&A headings from Daily notes and the standard Time Garden Daily template when present. It preserves filled sections and the hidden quick-note insertion marker. Before modifying anything, it writes and verifies a backup in `.archive`; notes changed concurrently are skipped.

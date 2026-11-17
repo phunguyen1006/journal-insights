@@ -1,9 +1,11 @@
 const { Plugin, ItemView, PluginSettingTab, Setting, Notice, TFile, Modal, editorInfoField, editorLivePreviewField } = require('obsidian');
 const photoModule = require('./photos');
 const galleryModule = require('./editor-gallery');
+const metricsModule = require('./metrics');
+const cleanupModule = require('./cleanup');
 
 const VIEW = 'journal-insights-view';
-const DEFAULTS = { dailyFolder: '01 Daily' };
+const DEFAULTS = { dailyFolder: '01 Daily', weeklyFolder: '02 Weekly' };
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function validDate(y, m, d) {
@@ -147,7 +149,7 @@ class JournalView extends ItemView {
   constructor(leaf,plugin) {
     super(leaf); this.plugin=plugin; this.tab='home'; this.query='';
     this.year=String(new Date().getFullYear()); this.entryYear='all'; this.limit=36;
-    this.generation=0; this.entries=[]; this.memoryDate=localKey(new Date()); this.selectedDay=null;
+    this.generation=0; this.entries=[]; this.weekEntries=[]; this.memoryDate=localKey(new Date()); this.selectedDay=null;
   }
   getViewType(){return VIEW;}
   getDisplayText(){return 'Journal Insights';}
@@ -157,8 +159,11 @@ class JournalView extends ItemView {
   async refresh(){
     const generation=++this.generation;
     if(!this.entries.length){this.contentEl.empty();el(this.contentEl,'div','ji-loading','Reading your journal...');}
-    const files=this.app.vault.getMarkdownFiles().filter(f=>underFolder(f.path,this.plugin.settings.dailyFolder));
-    const rows=[]; let cursor=0,failed=0;
+    const allFiles=this.app.vault.getMarkdownFiles();
+    const files=allFiles.filter(f=>underFolder(f.path,this.plugin.settings.dailyFolder));
+    const weeklyFolder=typeof this.plugin.settings.weeklyFolder==='string'?this.plugin.settings.weeklyFolder:DEFAULTS.weeklyFolder;
+    const weeklyFiles=allFiles.filter(f=>underFolder(f.path,weeklyFolder));
+    const rows=[],weekRows=[]; let cursor=0,weekCursor=0,failed=0;
     const worker=async()=>{
       while(cursor<files.length){
         const file=files[cursor++];
@@ -166,14 +171,15 @@ class JournalView extends ItemView {
           const raw=await this.app.vault.cachedRead(file);
           const cache=this.app.metadataCache.getFileCache(file);
           const text=cleanText(raw);
-          rows.push({file,date:dateFromFile(file,(cache&&cache.frontmatter)||{}),kind:'daily',text,words:countWords(text),photos:photoModule.parsePhotos(raw),private:!!(cache&&cache.frontmatter&&(cache.frontmatter.private===true||cache.frontmatter['journal-insights-hide']===true))});
+          rows.push({file,date:dateFromFile(file,(cache&&cache.frontmatter)||{}),kind:'daily',text,words:countWords(text),rating:metricsModule.score(cache?.frontmatter?.dayRating),photos:photoModule.parsePhotos(raw),private:!!(cache&&cache.frontmatter&&(cache.frontmatter.private===true||cache.frontmatter['journal-insights-hide']===true))});
         }catch(error){failed++;}
       }
     };
-    await Promise.all(Array.from({length:Math.min(12,files.length)},()=>worker()));
+    const weekWorker=async()=>{while(weekCursor<weeklyFiles.length){const file=weeklyFiles[weekCursor++];try{const cache=this.app.metadataCache.getFileCache(file);weekRows.push({file,wheel:cache?.frontmatter?.wheelOfLife||null});}catch(error){failed++;}}};
+    await Promise.all([...Array.from({length:Math.min(12,files.length)},()=>worker()),...Array.from({length:Math.min(8,weeklyFiles.length)},()=>weekWorker())]);
     if(generation!==this.generation)return;
     rows.sort((a,b)=>(b.date||'').localeCompare(a.date||'')||a.file.path.localeCompare(b.file.path));
-    this.entries=rows; this.failed=failed;
+    this.entries=rows; this.weekEntries=weekRows; this.failed=failed;
     this.sameDateCounts=new Map();
     for(const row of rows){const key=row.date;this.sameDateCounts.set(key,(this.sameDateCounts.get(key)||0)+1);}
     this.render();
@@ -201,7 +207,7 @@ class JournalView extends ItemView {
     for(const entry of items){
       const item=el(grid,'article','ji-card-item'+(compact?' is-compact':''));
       const card=button(item,'',()=>this.app.workspace.getLeaf('tab').openFile(entry.file),'ji-card'+(compact?' is-compact':''));
-      const meta=el(card,'div','ji-card-meta');el(meta,'span','',formatNumber(entry.words)+' words');
+      const meta=el(card,'div','ji-card-meta');el(meta,'span','',formatNumber(entry.words)+' words');if(entry.rating!==null&&entry.rating!==undefined)el(meta,'span','','Rating '+formatNumber(entry.rating)+' / 10');
       el(card,'h3','ji-card-date',formatDate(entry.date));
       el(card,'p','ji-card-preview',entry.text?(entry.text.slice(0,220)+(entry.text.length>220?'...':'')):'No text to preview yet.');
       if(entry.date&&(this.sameDateCounts.get(entry.date)||0)>1)el(card,'span','ji-conflict','Multiple entries on this date');
@@ -308,6 +314,7 @@ class JournalSettings extends PluginSettingTab {
     const c=this.containerEl;c.empty();el(c,'h2','','Journal Insights');
     new Setting(c).setName('Open at startup').setDesc('Show Journal Insights after Obsidian restores the workspace.').addToggle(t=>t.setValue(this.plugin.settings.openOnStartup).onChange(async value=>{this.plugin.settings.openOnStartup=value;await this.plugin.saveSettings();}));
     new Setting(c).setName('Daily folder').setDesc('Folder path relative to the vault.').addText(t=>t.setValue(this.plugin.settings.dailyFolder).onChange(async value=>{this.plugin.settings.dailyFolder=value.trim().replace(/^\/+|\/+$/g,'');await this.plugin.saveSettings();}));
+    new Setting(c).setName('Weekly folder').setDesc('Folder containing Wheel of Life weekly notes.').addText(t=>t.setValue(this.plugin.settings.weeklyFolder).onChange(async value=>{this.plugin.settings.weeklyFolder=value.trim().replace(/^\/+|\/+$/g,'');await this.plugin.saveSettings();}));
     new Setting(c).setName('Repair Pixel Banner properties').setDesc('Backs up affected notes and fixes legacy banner formatting.').addButton(b=>b.setButtonText('Repair banners').onClick(()=>this.plugin.repairBanners()));
     el(c,'p','ji-settings-note','Analytics use estimated words. Conflicting Daily versions are counted once per date using the longest version.');
   }
@@ -327,9 +334,10 @@ class JournalInsights extends Plugin {
     this.addRibbonIcon('book-heart','Open Journal Insights',()=>this.activateView());
     this.addCommand({id:'open-journal-insights',name:'Open Journal Insights',callback:()=>this.activateView()});
     this.addCommand({id:'repair-pixel-banner-properties',name:'Repair Pixel Banner properties',callback:()=>this.repairBanners()});
+    this.addCommand({id:'clean-empty-daily-sections',name:'Clean empty Daily sections',callback:()=>this.cleanupDailySections()});
     this.addSettingTab(new JournalSettings(this.app,this));
     const schedule=()=>{clearTimeout(this.refreshTimer);this.refreshTimer=setTimeout(()=>this.app.workspace.getLeavesOfType(VIEW).forEach(leaf=>leaf.view.refresh()),1500);};
-    const relevant=p=>underFolder(p,this.settings.dailyFolder);
+    const relevant=p=>underFolder(p,this.settings.dailyFolder)||underFolder(p,this.settings.weeklyFolder);
     const isImage=path=>/\.(?:png|jpe?g|gif|webp|avif|svg|bmp|heic|heif|tiff?)$/i.test(path);
     const changed=file=>{if(file instanceof TFile&&(relevant(file.path)||isImage(file.path)))schedule();};
     this.registerEvent(this.app.vault.on('create',changed));this.registerEvent(this.app.vault.on('modify',changed));this.registerEvent(this.app.vault.on('delete',changed));
@@ -351,6 +359,7 @@ class JournalInsights extends Plugin {
     if(!leaf){leaf=this.app.workspace.getLeaf('tab');await leaf.setViewState({type:VIEW,active:true});}
     await this.app.workspace.revealLeaf(leaf);
   }
+  async cleanupDailySections(){return cleanupModule.run(this,{mask:photoModule.maskNonContent,Notice,TFile});}
   async repairBanners(){
     if(this.repairRunning){new Notice('Banner repair is already running.');return;}
     this.repairRunning=true;new Notice('Checking Pixel Banner properties...');
@@ -393,6 +402,7 @@ class JournalInsights extends Plugin {
     }finally{this.repairRunning=false;}
   }
 }
-require('./experience').install(JournalView,{el,button,formatNumber,formatDate,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice});
+require('./experience').install(JournalView,{el,button,formatNumber,formatDate,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice,metrics:metricsModule});
+require('./insight-extras').install(JournalView,{el,button,formatNumber,formatDate,localKey,metrics:metricsModule});
 module.exports=JournalInsights;
 module.exports._test={validDate,localKey,dateFromFile,underFolder,cleanText,countWords,groupStats,aggregateDays,heatLevel,buildCharts,extractImage,repairBanner,JournalView};

@@ -55,7 +55,7 @@ function heatValue(day,mode){return !day?0:mode==='days'?(day.words>0?1:0):mode=
 function levelFor(value,mode,heatLevel){return mode==='days'?(value?4:0):mode==='entries'?Math.min(4,value):heatLevel(value);}
 function memoryEligible(e,excluded){return !!(e.date&&(e.words>0||(e.photos&&e.photos.length))&&!e.private&&!excluded.includes(e.file.path));}
 
-function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice}) {
+function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,validDate,aggregateDays,heatLevel,MONTHS,TFile,Notice,metrics}) {
   const methods={
     prefs(){
       if(!this.experienceReady){
@@ -115,7 +115,7 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
           const h=this.title(section,'','Recent Entries');button(h,'View all',()=>this.navigate('entries'),'ji-link');this.cards(section,entries.filter(e=>e.words>0||(e.photos&&e.photos.length)).slice(0,3),true);
         }else if(id==='activity'){
           const h=this.title(section,'','Writing Activity');this.yearControl(h,entries);this.heatmap(section,stats,Number(this.year));
-        }else{this.title(section,'','At a Glance');const grid=el(section,'div','ji-stats');this.metric(grid,n(stats.active.length),'Writing days','Unique dates with text');this.metric(grid,n(stats.words),'Words written','Estimated, through today');this.metric(grid,n(stats.streak),'Current streak','Through today or yesterday');this.metric(grid,n(stats.longest),'Longest streak','Consecutive writing days');button(section,'View insights',()=>this.navigate('insights'),'ji-link');}
+        }else{this.title(section,'','At a Glance');const grid=el(section,'div','ji-stats'),streak=metrics.journalStreak(stats.days,localKey(new Date()));this.metric(grid,n(stats.active.length),'Writing days','Unique dates with text');this.metric(grid,n(stats.words),'Words written','Estimated, through today');this.metric(grid,n(streak.current),'Current streak','Days with text or linked images, through today or yesterday');this.metric(grid,n(streak.longest),'Longest streak','Consecutive days with text or linked images');const details=el(section,'details','ji-heat-about');el(details,'summary','','Streak details');el(details,'p','ji-settings-help','A journal day has text or at least one linked image. Empty templates do not count. '+(streak.current?'Current streak includes '+n(streak.photoOnly)+' photo-only '+(streak.photoOnly===1?'day.':'days.'):'No current streak.')+(streak.breakHasNote?' Last break: '+fd(streak.breakDate)+' (note has no text or linked images).':' Last break: '+fd(streak.breakDate)+' (no daily note).'));button(section,'View insights',()=>this.navigate('insights'),'ji-link');}
       }
       if(prefs.hidden.length===HOME.length){el(root,'p','ji-empty','All Home sections are hidden.');button(root,'Open Settings',()=>this.navigate('settings'),'ji-button');}
       this.renderDrill(root);
@@ -178,23 +178,25 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
 
       const advanced=el(settings,'section','ji-settings-section');el(advanced,'h3','ji-settings-title','Folder');
       const folderInputs={};
-      for(const [key,label] of [['dailyFolder','Daily folder']]){
+      for(const [key,label] of [['dailyFolder','Daily folder'],['weeklyFolder','Weekly folder']]){
         const lab=el(advanced,'label','ji-folder-row');el(lab,'span','ji-setting-name',label);const input=el(lab,'input','ji-input');input.type='text';input.value=this.plugin.settings[key]||'';folderInputs[key]=input;
       }
       const error=el(advanced,'p','ji-settings-error');error.setAttribute('role','alert');
       button(advanced,'Save folder',async event=>{
         const b=event.currentTarget||event.target;
         const clean=value=>value.trim().replace(/\\/g,'/').replace(/^\/+|\/+$/g,'');
-        const daily=clean(folderInputs.dailyFolder.value);
+        const daily=clean(folderInputs.dailyFolder.value),weekly=clean(folderInputs.weeklyFolder.value);
         const exists=path=>path&&!path.split('/').some(part=>part==='.'||part==='..'||!part)&&this.app.vault.getAbstractFileByPath&&Array.isArray(this.app.vault.getAbstractFileByPath(path)?.children);
-        if(!exists(daily)){error.textContent='Choose an existing folder in this vault.';return;}
-        error.textContent='';b.disabled=true;const before={dailyFolder:this.plugin.settings.dailyFolder};Object.assign(this.plugin.settings,{dailyFolder:daily});
+        if(!exists(daily)||(weekly&&!exists(weekly))){error.textContent='Choose an existing Daily folder and, if supplied, an existing Weekly folder.';return;}
+        error.textContent='';b.disabled=true;const before={dailyFolder:this.plugin.settings.dailyFolder,weeklyFolder:this.plugin.settings.weeklyFolder};Object.assign(this.plugin.settings,{dailyFolder:daily,weeklyFolder:weekly});
         try{await this.plugin.saveSettings();}catch(e){Object.assign(this.plugin.settings,before);error.textContent='Could not save folders. Please try again.';b.disabled=false;return;}
         new Notice('Folder saved.');try{await this.refresh();}finally{b.disabled=false;}
       },'ji-button');
       const maintenance=el(settings,'details','ji-settings-details ji-maintenance');el(maintenance,'summary','','Maintenance');
       el(maintenance,'p','ji-settings-help','Repair legacy Pixel Banner properties with a backup.');
       button(maintenance,'Repair banners',()=>this.plugin.repairBanners(),'ji-button');
+      el(maintenance,'p','ji-settings-help','Remove empty Quick Notes and Q&A headings from Daily notes and the standard Daily template. Existing content and quick-note markers are preserved; a backup is created.');
+      button(maintenance,'Clean empty Daily sections',()=>this.plugin.cleanupDailySections(),'ji-button');
     },
     memoriesFor(entries,key){return entries.filter(e=>memoryEligible(e,this.prefs().excluded)&&e.date.slice(5)===key.slice(5)&&e.date.slice(0,4)<key.slice(0,4));},
     randomMemory(entries){
@@ -231,6 +233,7 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       const bins=mode==='days'?[[0,'No writing'],[4,'Writing day']]:mode==='entries'?[[0,'0'],[1,'1'],[2,'2'],[3,'3'],[4,'4+']]:[[0,'0'],[1,'1–99'],[2,'100–299'],[3,'300–699'],[4,'700+']];
       for(const [level,label] of bins){const item=el(legend,'span','ji-legend-item');el(item,'span','ji-legend-swatch ji-level-'+level);el(item,'span','',label);}el(legend,'span','ji-muted',mode==='words'?'words / day':mode==='entries'?'nonempty files / day':'');
       const future=el(legend,'span','ji-legend-item');el(future,'span','ji-legend-swatch is-future');el(future,'span','','Future');
+      const photoOnly=el(legend,'span','ji-legend-item');el(photoOnly,'span','ji-legend-swatch ji-photo-only');el(photoOnly,'span','','Photo-only day');
       const detail=el(root,'p','ji-heat-detail','');detail.setAttribute('role','status');
       const wrap=el(root,'div','ji-months'),today=localKey(new Date());
       for(let month=0;month<12;month++){
@@ -239,8 +242,9 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
         const offset=(new Date(year,month,1,12).getDay()+6)%7;for(let i=0;i<offset;i++)el(grid,'span','ji-day-spacer');
         for(let day=1;day<=new Date(year,month+1,0).getDate();day++){
           const key=validDate(year,month+1,day),record=stats.days.get(key),value=heatValue(record,mode),isFuture=key>today;
-          const label=fd(key)+': '+n(record?record.words:0)+' words · '+n(record?record.records.filter(e=>e.words>0).length:0)+' nonempty entries'+(isFuture?' · Future date':'');
-          const b=button(grid,String(day),()=>{this.selectedDay=key;if(this.tab!=='calendar'){this.tab='calendar';this.year=String(year);this.render();this.showDay(key,true);}else{this.showDay(key,true);for(const x of grid.querySelectorAll?wrap.querySelectorAll('[aria-pressed]'):[])x.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');}},'ji-day '+(isFuture?'is-future':'ji-level-'+levelFor(value,mode,heatLevel))+(key===today?' is-today':''));
+          const imageCount=record?record.records.reduce((sum,e)=>sum+(e.photos?.length||0),0):0;
+          const label=fd(key)+': '+n(record?record.words:0)+' words · '+n(imageCount)+' linked images · '+n(record?record.records.filter(e=>e.words>0).length:0)+' entries with text'+(isFuture?' · Future date':'');
+          const b=button(grid,String(day),()=>{this.selectedDay=key;if(this.tab!=='calendar'){this.tab='calendar';this.year=String(year);this.render();this.showDay(key,true);}else{this.showDay(key,true);for(const x of grid.querySelectorAll?wrap.querySelectorAll('[aria-pressed]'):[])x.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');}},'ji-day '+(isFuture?'is-future':'ji-level-'+levelFor(value,mode,heatLevel))+(!isFuture&&record&&!record.words&&imageCount?' ji-photo-only':'')+(key===today?' is-today':''));
           b.disabled=isFuture;b.title=label;b.setAttribute('aria-label',label);b.setAttribute('aria-pressed',String(this.selectedDay===key));if(key===today)b.setAttribute('aria-current','date');b.addEventListener('mouseenter',()=>detail.textContent=label);b.addEventListener('focus',()=>detail.textContent=label);
         }
       }
@@ -286,10 +290,11 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       if(this.rangeMode==='custom'){const tools=el(root,'div','ji-date-range');for(const [key,label] of [['start','From'],['end','Through']]){const lab=el(tools,'label','ji-date-label');el(lab,'span','',label);const input=el(lab,'input','ji-input');input.type='date';input.max=today;input.value=this.customRange[key]||'';input.addEventListener('change',()=>{this.customRange[key]=input.value;this.savePrefs({customRange:this.customRange});});}button(tools,'Apply dates',()=>{this.drill=null;this.render();},'ji-button');}
       const range=rangeFor(entries,this.rangeMode,Number(this.year),today,this.customRange);if(range.error){el(root,'p','ji-warning',range.error);return;}
       const d=analyze(entries,range,aggregateDays,today);el(root,'p','ji-period-caption',fd(range.start,{month:'short',day:'numeric',year:'numeric'})+' – '+fd(range.end,{month:'short',day:'numeric',year:'numeric'})+' · '+n(range.days)+' calendar days');
+      this.renderRatings(root,entries,range,today);this.renderWheel(root,range,today);
       const grid=el(root,'div','ji-stats ji-insight-stats');
       this.metric(grid,n(d.data.words),'Words written','Longest daily version per date');this.metric(grid,n(d.data.active.length),'Writing days','Unique dates with text');this.metric(grid,d.rate+'%','Consistency',n(d.data.active.length)+' of '+n(range.days)+' calendar days');this.metric(grid,n(d.average),'Words / writing day','Mean across active days');
       const secondary=el(root,'details','ji-more-metrics');secondary.open=true;el(secondary,'summary','','More about this period');const extra=el(secondary,'div','ji-stats ji-secondary-stats');
-      this.metric(extra,n(d.median),'Median day','Middle active-day word count');this.metric(extra,n(d.perCalendar),'Words / calendar day','Includes days without writing');this.metric(extra,n(d.data.longest),'Longest streak','Within the selected period');this.metric(extra,n(d.top[0]?d.top[0].words:0),'Longest day',d.top[0]?d.top[0].date:'No writing yet');this.metric(extra,n(d.records.filter(e=>e.words>0).length),'Nonempty files','Includes Daily conflict versions');this.metric(extra,n(aggregateDays(entries.filter(e=>e.date&&e.date<=today)).streak),'Current streak','All time, through today or yesterday');
+      this.metric(extra,n(d.median),'Median day','Middle active-day word count');this.metric(extra,n(d.perCalendar),'Words / calendar day','Includes days without writing');this.metric(extra,n(d.data.longest),'Longest writing streak','Text days within the selected period');this.metric(extra,n(d.top[0]?d.top[0].words:0),'Longest day',d.top[0]?d.top[0].date:'No writing yet');this.metric(extra,n(d.records.filter(e=>e.words>0).length),'Nonempty files','Includes Daily conflict versions');this.metric(extra,n(metrics.journalStreak(aggregateDays(entries.filter(e=>e.date&&e.date<=today)).days,today).current),'Current journal streak','All time; text or linked images, through today or yesterday');
       const compare=el(root,'div','ji-comparison');const delta=d.data.words-d.prev.words;el(compare,'strong','',d.prev.words?(delta>=0?'+':'')+n(Math.round(delta/d.prev.words*100))+'% words':'No percentage baseline');el(compare,'span','ji-muted',n(d.data.words)+' vs '+n(d.prev.words)+' words · previous '+n(range.days)+' days ('+d.previous.start+' – '+d.previous.end+'). Missing dates count as no recorded writing.');
       this.renderDrill(root);
       if(!d.data.active.length)el(root,'p','ji-empty','No writing in this period. Choose another date range.');
