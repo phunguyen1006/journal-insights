@@ -1,6 +1,6 @@
-# Journal Insights 0.7.0
+# Journal Insights 0.8.0
 
-A theme-aware, local dashboard for daily journals. All interface text is English; original journal writing is never translated or rewritten.
+A theme-aware, local dashboard for daily journals. The interface is in English and previews display the original journal writing.
 
 ## Installation
 
@@ -9,7 +9,7 @@ Requires Obsidian 1.8.7 or later.
 1. Create a `journal-insights` folder inside your vault's `.obsidian/plugins/` folder.
 2. Copy `main.js`, `manifest.json`, and `styles.css` from this repository into that folder.
 3. In Obsidian, open **Settings → Community plugins**, reload the plugin list if necessary, and enable **Journal Insights**.
-4. Open Journal Insights and set your daily notes folder under **Settings → Folder**. The default is `01 Daily`.
+4. Open Journal Insights and set your daily notes folder under **Settings → Folders**. The default is `01 Daily`.
 
 This repository contains the source and tests as well as the built plugin. Personal journal notes, image attachments, and the plugin's local `data.json` settings are not included.
 
@@ -21,13 +21,23 @@ The dashboard reads notes from the configured daily folder on your device. It do
 
 - On This Day and Recent Entries come first, followed by Writing Activity and At a Glance.
 - Open **Settings → Home** to show/hide sections and use the up/down buttons to reorder them. Settings persist across restarts.
-- **Open today** lists existing notes for today. This release does not create new notes.
+- **Today** opens today's note directly when there is a single match. When no note exists, Journals handles creation using its configured Daily template. If several Daily files share the date, choose the one to open.
+- **Quick Rating** saves a 1–10 score to the chosen note's **dayRating** property. When there are multiple files, select the target first.
+- **Compact Home** shows Today, at most one memory and up to two recent entries. It is automatic on mobile and can be set to **Always** or **Never** in Home settings.
+
+## Entries
+
+- Search by title, date or journal text. Vietnamese searches work with or without accents. Results highlight the matched text in an excerpt.
+- **Filters** supports a date range, photos and rating. Filters and scroll position stay in place when leaving and returning to the dashboard during a session.
+- **Photo Timeline** groups pictures by month. Select a photo to open its source entry.
+- Select **Periods** on a Daily card, or use **Journal periods** from a journal note's context menu. Daily notes link to existing Week, Month, Quarter and Year notes. A period note opens its range in Entries.
 
 ## On This Day
 
 - Choose a reference date to revisit the same month/day in earlier years, grouped by year.
 - Cards show a text excerpt, word count, and a compact gallery of linked images when present.
 - **Read Entry** opens the original note. **Random Memory** selects an earlier nonempty note from daily notes.
+- Select **Save** on a memory or entry to keep it in **On This Day → Saved**. Saved entries follow note moves in Obsidian.
 - Under **Settings → Memories**, find an entry by name or date and select **Hide**. Restore individual entries or all hidden entries there. This does not modify the notes or their statistics.
 - Frontmatter `private: true` or `journal-insights-hide: true` also excludes a note from Memories. These properties are not encryption and do not hide notes from Entries, search, analytics, or Obsidian itself.
 
@@ -51,6 +61,8 @@ The dashboard reads notes from the configured daily folder on your device. It do
 - The gallery is display-only: it does not move, rename, rewrite, or delete notes, image files, or links. Thumbnail crops are for display only; the viewer fits the original image.
 
 ## Insights
+
+Switch to **Review** for a selected week or month. It shows writing days, words, the rating average with its rated-day count, the largest Wheel of Life changes against the preceding period, and entries to revisit. Each section links to its source notes where available.
 
 Periods: last 30 days, last 90 days, selected year, all time, or custom dates. Future dates are excluded; custom end dates after today are capped at today.
 
@@ -86,11 +98,15 @@ Bar charts open source entries on click. Every chart has **View data**, includin
 
 ## Startup and settings
 
-**Settings** contains the Home layout, hidden Memories, startup toggle, Daily and Weekly folder paths, and maintenance. Open at startup remains enabled by default. Folder changes require existing folders and do not move files. Existing Obsidian community-plugin settings remain available. Dashboard preferences are stored in the plugin's own data file, not in journal notes.
+**Settings** contains Home layout, hidden Memories, the startup toggle, journal folder paths, and maintenance. The hide controls and note properties also apply to Saved, Photo Timeline and Review highlights. Open at startup remains enabled by default. Folder changes require existing folders. Dashboard preferences and saved paths are stored in the plugin's own data file.
+
+**Journal Check** lists dates with multiple Daily files, dates with conflicting ratings and notes with unresolved local or Day One images. Each issue links to the relevant note.
+
+The in-memory index loads journal files at startup and updates affected notes on edits, renames, deletions and sync events. **Refresh** rebuilds it on demand.
 
 ## Maintenance
 
-`core.js` contains vault reading, parsing and the guarded banner repair. `experience.js` contains dashboard rendering and analytics. `metrics.js` and `insight-extras.js` calculate and display ratings and Wheel of Life results. `photos.js` recognizes and displays images; `editor-gallery.js` handles note display. Run `node build.cjs` to create the self-contained `main.js`; Obsidian does not need to load local helper modules. `styles.css` is the combined stylesheet. Run `node test.cjs`, `node analytics-test.cjs`, `node settings-test.cjs`, `node photos-test.cjs`, `node metrics-test.cjs`, `node cleanup-test.cjs`, and `node integration-test.cjs` for regression checks. The integration test deliberately simulates a failed backup and logs that expected error before PASS.
+`core.js` handles plugin lifecycle, vault access and banner repair. `journal-index.js` manages incremental updates. `experience.js` renders the dashboard and analytics. `entry-search.js`, `journal-tools.js` and `journal-review.js` implement entry filters, journal actions, reviews and checks. Run `node build.cjs` to create the self-contained `main.js`. Run `node test.cjs`, `node analytics-test.cjs`, `node settings-test.cjs`, `node photos-test.cjs`, `node metrics-test.cjs`, `node cleanup-test.cjs`, `node integration-test.cjs` and `node journal-features-test.cjs` for regression checks. The integration test deliberately simulates a failed backup and logs that expected error before PASS.
 
 The dashboard upgrade does not edit journal text or banner properties. The separate repair command writes a verified backup and checks for concurrent changes before modifying any note.
 

@@ -98,12 +98,12 @@ function makeController(plugin,{Modal,TFile,el,button}){
     };
     modal.open();
   }
-  function gallery(root,photos,sourcePath,{limit=3,className=''}={}){
+  function gallery(root,photos,sourcePath,{limit=3,className='',onOpen,label}={}){
     if(!photos||!photos.length)return null;
     const shown=Math.min(limit,photos.length),strip=el(root,'div','ji-photos '+className);strip.setAttribute('aria-label','Journal photos');
     for(let i=0;i<shown;i++){
-      const item=resolvePhoto(plugin.app,photos[i],sourcePath,TFile),slot=el(strip,'div','ji-photo-slot'),b=button(slot,'',()=>viewer(photos,sourcePath,i),'ji-photo-tile');
-      b.setAttribute('aria-label','Open photo '+(i+1)+' of '+photos.length+(item.kind==='missing'?' (file missing)':item.kind==='remote'?' (external)':item.kind==='dayone'?' (Day One media)':''));
+      const item=resolvePhoto(plugin.app,photos[i],sourcePath,TFile),slot=el(strip,'div','ji-photo-slot'),b=button(slot,'',()=>onOpen?onOpen(i):viewer(photos,sourcePath,i),'ji-photo-tile');
+      b.setAttribute('aria-label',label||'Open photo '+(i+1)+' of '+photos.length+(item.kind==='missing'?' (file missing)':item.kind==='remote'?' (external)':item.kind==='dayone'?' (Day One media)':''));
       if(item.kind==='local'){
         const img=el(b,'img','ji-photo-thumb');img.alt='';img.loading='lazy';img.decoding='async';img.src=item.src;img.addEventListener('error',()=>{img.remove();el(b,'span','ji-photo-placeholder','Image unavailable');});
       }else el(b,'span','ji-photo-placeholder',item.kind==='remote'?'External image':item.kind==='dayone'?'Day One media':'Image not found');

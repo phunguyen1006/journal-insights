@@ -66,14 +66,20 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
         if(/^\d{4}$/.test(p.year||''))this.year=p.year;
       }
       const p=this.plugin.settings.experience||{};
-      return {...p,order:[...new Set([...(Array.isArray(p.order)?p.order.filter(x=>HOME.includes(x)):[]),...HOME])],hidden:Array.isArray(p.hidden)?p.hidden:[],excluded:Array.isArray(p.excluded)?p.excluded:[]};
+      const paths=key=>Array.isArray(p[key])?[...new Set(p[key].filter(path=>typeof path==='string'))]:[];
+      return {...p,order:[...new Set([...(Array.isArray(p.order)?p.order.filter(x=>HOME.includes(x)):[]),...HOME])],
+        hidden:Array.isArray(p.hidden)?p.hidden:[],excluded:paths('excluded'),savedMemories:paths('savedMemories')};
     },
     async savePrefs(changes){
       const old=this.plugin.settings.experience,updated={...this.prefs(),...changes};
       this.plugin.settings.experience=updated;
       try{await this.plugin.saveSettings();return true;}catch(error){if(this.plugin.settings.experience===updated)this.plugin.settings.experience=old;new Notice('Could not save settings. Please try again.');return false;}
     },
-    navigate(tab){this.tab=tab;this.limit=36;this.drill=null;this.render();this.contentEl.scrollTop=0;},
+    navigate(tab){if(this.tab!==tab)this.drill=null;this.tab=tab;this.render();},
+    clearScroll(tab){
+      this.scrollByTab.delete(tab);
+      if(this.renderedTab===tab)this.contentEl.scrollTop=0;
+    },
     yearControl(root,entries){
       const years=[...new Set([String(new Date().getFullYear()),...entries.filter(e=>e.date&&e.date<=localKey(new Date())).map(e=>e.date.slice(0,4))])].sort().reverse();
       if(!years.includes(this.year))this.year=years[0];const select=el(root,'select','ji-select ji-year');select.setAttribute('aria-label','Select year');for(const year of years){const o=el(select,'option','',year);o.value=year;}select.value=this.year;select.addEventListener('change',()=>{this.year=select.value;this.drill=null;this.savePrefs({year:this.year});this.render();});
@@ -81,43 +87,80 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
     render(){
       this.prefs();
       for(const observer of this.chartObservers||[])observer.disconnect();this.chartObservers=[];
-      const root=this.contentEl;root.empty();this.dayRegion=null;
+      const root=this.contentEl,previous=this.renderedTab;
+      if(previous)this.scrollByTab.set(previous,root.scrollTop);
+      const active=root.ownerDocument?.activeElement;
+      const focused=previous===this.tab&&root.contains(active)?active:null;
+      const focusKey=focused?.getAttribute('data-ji-focus');
+      const selection=typeof focused?.selectionStart==='number'?[focused.selectionStart,focused.selectionEnd]:null;
+      root.empty();this.dayRegion=null;
       const shell=el(root,'div','ji-shell'),header=el(shell,'header','ji-header');
       const brand=el(header,'div','ji-brand');el(brand,'h1','ji-title','Journal Insights');
       const actions=el(header,'div','ji-header-actions');
-      button(actions,'Refresh',async event=>{const b=event.currentTarget||event.target;b.disabled=true;b.textContent='Refreshing…';try{await this.refresh();}finally{b.disabled=false;}},'ji-button ji-quiet');
+      const refresh=button(actions,'Refresh',async event=>{
+        const control=event.currentTarget;
+        control.disabled=true;
+        control.textContent='Refreshing…';
+        this.plugin.journalIndex.requestScan(true);
+        try{await this.plugin.refreshViews();}finally{control.disabled=false;}
+      },'ji-button ji-quiet');
+      refresh.setAttribute('data-ji-focus','refresh');
       const nav=el(shell,'nav','ji-nav');nav.setAttribute('aria-label','Journal navigation');
-      for(const [id,label] of [['home','Home'],['entries','Entries'],['calendar','Calendar'],['memories','On This Day'],['insights','Insights'],['settings','Settings']]){const b=button(nav,label,()=>this.navigate(id),'ji-nav-item'+(this.tab===id?' is-active':''));if(this.tab===id)b.setAttribute('aria-current','page');}
+      const activeTab=this.tab==='check'?'settings':this.tab;
+      for(const [id,label] of [['home','Home'],['entries','Entries'],['calendar','Calendar'],['memories','On This Day'],['insights','Insights'],['settings','Settings']]){
+        const b=button(nav,label,()=>{
+          this.navigate(id);
+          this.contentEl.querySelector?.('[data-ji-focus="nav-'+id+'"]')?.focus({preventScroll:true});
+        },'ji-nav-item'+(activeTab===id?' is-active':''));
+        b.setAttribute('data-ji-focus','nav-'+id);
+        if(activeTab===id)b.setAttribute('aria-current','page');
+      }
       if(this.failed)el(shell,'p','ji-warning','Could not read '+this.failed+' files. Refresh to retry.');
-      const entries=this.subset(),stats=aggregateDays(entries.filter(e=>e.date&&e.date<=localKey(new Date())));
+      const entries=this.subset();
+      const needsDays=this.tab==='home'||this.tab==='calendar';
+      const stats=needsDays?aggregateDays(entries.filter(e=>e.date&&e.date<=localKey(new Date()))):null;
       const main=el(shell,'main','ji-main');main.setAttribute('aria-label','Journal Insights content');
       if(this.tab==='home')this.renderHome(main,entries,stats);
       if(this.tab==='entries')this.renderEntries(main,entries);
       if(this.tab==='calendar')this.renderCalendar(main,entries,stats);
       if(this.tab==='memories')this.renderMemories(main,entries);
-      if(this.tab==='insights')this.renderInsights(main,entries,stats);
+      if(this.tab==='insights'){
+        this.insightsTitle(main);
+        if(this.insightsMode==='review')this.renderReview(main,entries);
+        else this.renderInsights(main,entries);
+      }
       if(this.tab==='settings')this.renderSettings(main);
+      if(this.tab==='check')this.renderJournalCheck(main,entries);
+      this.renderedTab=this.tab;
+      root.scrollTop=this.scrollByTab.get(this.tab)||0;
+      if(focusKey){
+        const target=root.querySelector?.('[data-ji-focus="'+focusKey+'"]');
+        target?.focus({preventScroll:true});
+        if(selection)target?.setSelectionRange?.(...selection);
+      }
     },
     metric(root,value,label,note){const box=el(root,'div','ji-stat');el(box,'span','ji-stat-label',label);el(box,'strong','ji-stat-number',value);if(note){box.title=note;box.setAttribute('role','group');box.setAttribute('aria-label',label+': '+value+'. '+note);}return box;},
     renderHome(root,entries,stats){
-      const top=el(root,'div','ji-home-top');el(top,'span','ji-home-date',fd(localKey(new Date()),{weekday:'long',month:'long',day:'numeric',year:'numeric'}));
-      const today=entries.filter(e=>e.date===localKey(new Date()));if(today.length)button(top,'Open today',()=>this.explore('Today',today),'ji-button');
+      const today=localKey(new Date());
+      const top=el(root,'div','ji-home-top');
+      this.renderHomeActions(top,today,entries);
       const prefs=this.prefs();
-      const sections=el(root,'div','ji-home-layout');
-      for(const id of prefs.order){
-        if(prefs.hidden.includes(id))continue;
+      const compact=this.isCompactHome(prefs);
+      const visible=prefs.order.filter(id=>!prefs.hidden.includes(id)&&(!compact||id==='memories'||id==='recent'));
+      const sections=el(root,'div','ji-home-layout'+(compact?' ji-home-compact':''));
+      for(const id of visible){
         const section=el(sections,'section','ji-panel ji-home-'+id);
         if(id==='memories'){
-          const h=this.title(section,'','On This Day');button(h,'View all',()=>this.navigate('memories'),'ji-link');
-          const memories=this.memoriesFor(entries,localKey(new Date()));
-          if(memories.length)this.memoryCards(section,memories.slice(0,2),localKey(new Date()));else{el(section,'p','ji-empty','No memories for today.');button(section,'Random Memory',()=>this.randomMemory(entries),'ji-button');}
+          const h=this.title(section,'','On This Day');button(h,'View all',()=>{this.memoriesMode='day';this.navigate('memories');},'ji-link');
+          const memories=this.memoriesFor(entries,today);
+          if(memories.length)this.memoryCards(section,memories.slice(0,compact?1:2),today);else{el(section,'p','ji-empty','No memories for today.');button(section,'Random Memory',()=>this.randomMemory(entries),'ji-button');}
         }else if(id==='recent'){
-          const h=this.title(section,'','Recent Entries');button(h,'View all',()=>this.navigate('entries'),'ji-link');this.cards(section,entries.filter(e=>e.words>0||(e.photos&&e.photos.length)).slice(0,3),true);
+          const h=this.title(section,'','Recent Entries');button(h,'View all',()=>{this.entriesMode='entries';this.navigate('entries');},'ji-link');this.cards(section,entries.filter(e=>e.words>0||e.photos?.length).slice(0,compact?2:3),true);
         }else if(id==='activity'){
           const h=this.title(section,'','Writing Activity');this.yearControl(h,entries);this.heatmap(section,stats,Number(this.year));
         }else{this.title(section,'','At a Glance');const grid=el(section,'div','ji-stats'),streak=metrics.journalStreak(stats.days,localKey(new Date()));this.metric(grid,n(stats.active.length),'Writing days','Unique dates with text');this.metric(grid,n(stats.words),'Words written','Estimated, through today');this.metric(grid,n(streak.current),'Current streak','Days with text or linked images, through today or yesterday');this.metric(grid,n(streak.longest),'Longest streak','Consecutive days with text or linked images');const details=el(section,'details','ji-heat-about');el(details,'summary','','Streak details');el(details,'p','ji-settings-help','A journal day has text or at least one linked image. Empty templates do not count. '+(streak.current?'Current streak includes '+n(streak.photoOnly)+' photo-only '+(streak.photoOnly===1?'day.':'days.'):'No current streak.')+(streak.breakHasNote?' Last break: '+fd(streak.breakDate)+' (note has no text or linked images).':' Last break: '+fd(streak.breakDate)+' (no daily note).'));button(section,'View insights',()=>this.navigate('insights'),'ji-link');}
       }
-      if(prefs.hidden.length===HOME.length){el(root,'p','ji-empty','All Home sections are hidden.');button(root,'Open Settings',()=>this.navigate('settings'),'ji-button');}
+      if(!visible.length){el(root,'p','ji-empty','All Home sections are hidden.');button(root,'Open Settings',()=>this.navigate('settings'),'ji-button');}
       this.renderDrill(root);
     },
     renderSettings(root){
@@ -130,7 +173,15 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       startCheck.addEventListener('change',async()=>{const old=this.plugin.settings.openOnStartup;this.plugin.settings.openOnStartup=startCheck.checked;try{await this.plugin.saveSettings();}catch(error){this.plugin.settings.openOnStartup=old;startCheck.checked=old!==false;new Notice('Could not save settings. Please try again.');}});
 
       const home=el(settings,'section','ji-settings-section');el(home,'h3','ji-settings-title','Home');
-      const prefs=this.prefs(),list=el(home,'div','ji-settings-list');
+      const prefs=this.prefs();
+      const compact=el(home,'label','ji-setting-row');
+      el(compact,'span','ji-setting-name','Compact Home');
+      const layout=el(compact,'select','ji-select');
+      layout.setAttribute('data-ji-focus','compact-home');
+      for(const [id,label] of [['auto','Automatic on mobile'],['on','Always'],['off','Never']])el(layout,'option','',label).value=id;
+      layout.value=['on','off'].includes(prefs.compactHome)?prefs.compactHome:'auto';
+      layout.addEventListener('change',async()=>{await this.savePrefs({compactHome:layout.value});this.render();});
+      const list=el(home,'div','ji-settings-list');
       const updateHome=async(change,focus)=>{await this.savePrefs(change);this.render();const target=this.contentEl.querySelector&&this.contentEl.querySelector('[data-focus="'+focus+'"]');if(target)target.focus();};
       prefs.order.forEach((id,i)=>{
         const row=el(list,'div','ji-setting-row ji-home-setting'),label=el(row,'label','ji-toggle-label');
@@ -149,7 +200,7 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
         input.addEventListener('change',async()=>{const ok=await this.savePrefs({[key]:input.checked});if(ok&&key==='photoGalleryInNotes'&&this.plugin.updatePhotoEditor)this.plugin.updatePhotoEditor();if(ok&&key==='photoGalleryInNotes')new Notice('Reopen a note to refresh Reading view.');this.render();});
       }
       const memories=el(settings,'section','ji-settings-section');el(memories,'h3','ji-settings-title','Memories');
-      el(memories,'p','ji-settings-help','Hide entries from On This Day and Random Memory. Notes and statistics are unchanged.');
+      el(memories,'p','ji-settings-help','Hide entries from On This Day, Saved, Photo Timeline and Review highlights.');
       const search=el(memories,'input','ji-input ji-settings-search');search.type='search';search.placeholder='Find an entry by name or date';search.value=this.memorySearch||'';search.setAttribute('aria-label','Find an entry to hide from Memories');
       const results=el(memories,'div','ji-settings-results');results.setAttribute('aria-live','polite');
       const drawResults=()=>{
@@ -176,22 +227,29 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       }
       const privacy=el(memories,'details','ji-settings-details');el(privacy,'summary','','Note properties');el(privacy,'p','ji-settings-help','Notes with private: true or journal-insights-hide: true are also excluded from Memories. These properties do not encrypt or hide the note elsewhere.');
 
-      const advanced=el(settings,'section','ji-settings-section');el(advanced,'h3','ji-settings-title','Folder');
+      const advanced=el(settings,'section','ji-settings-section');el(advanced,'h3','ji-settings-title','Folders');
       const folderInputs={};
-      for(const [key,label] of [['dailyFolder','Daily folder'],['weeklyFolder','Weekly folder']]){
+      for(const [key,label] of [['dailyFolder','Daily folder'],['weeklyFolder','Weekly folder'],
+        ['monthlyFolder','Monthly folder'],['quarterlyFolder','Quarterly folder'],['yearlyFolder','Yearly folder']]){
         const lab=el(advanced,'label','ji-folder-row');el(lab,'span','ji-setting-name',label);const input=el(lab,'input','ji-input');input.type='text';input.value=this.plugin.settings[key]||'';folderInputs[key]=input;
       }
       const error=el(advanced,'p','ji-settings-error');error.setAttribute('role','alert');
-      button(advanced,'Save folder',async event=>{
+      button(advanced,'Save folders',async event=>{
         const b=event.currentTarget||event.target;
         const clean=value=>value.trim().replace(/\\/g,'/').replace(/^\/+|\/+$/g,'');
-        const daily=clean(folderInputs.dailyFolder.value),weekly=clean(folderInputs.weeklyFolder.value);
+        const next=Object.fromEntries(Object.entries(folderInputs).map(([key,input])=>[key,clean(input.value)]));
         const exists=path=>path&&!path.split('/').some(part=>part==='.'||part==='..'||!part)&&this.app.vault.getAbstractFileByPath&&Array.isArray(this.app.vault.getAbstractFileByPath(path)?.children);
-        if(!exists(daily)||(weekly&&!exists(weekly))){error.textContent='Choose an existing Daily folder and, if supplied, an existing Weekly folder.';return;}
-        error.textContent='';b.disabled=true;const before={dailyFolder:this.plugin.settings.dailyFolder,weeklyFolder:this.plugin.settings.weeklyFolder};Object.assign(this.plugin.settings,{dailyFolder:daily,weeklyFolder:weekly});
+        const paths=Object.values(next).filter(Boolean);
+        if(!next.dailyFolder||!paths.every(exists)||new Set(paths).size!==paths.length){error.textContent='Choose distinct existing folders. Daily is required.';return;}
+        error.textContent='';b.disabled=true;
+        const before=Object.fromEntries(Object.keys(next).map(key=>[key,this.plugin.settings[key]]));
+        Object.assign(this.plugin.settings,next);
         try{await this.plugin.saveSettings();}catch(e){Object.assign(this.plugin.settings,before);error.textContent='Could not save folders. Please try again.';b.disabled=false;return;}
-        new Notice('Folder saved.');try{await this.refresh();}finally{b.disabled=false;}
+        new Notice('Folders saved.');try{await this.plugin.reindexFolders();}finally{b.disabled=false;}
       },'ji-button');
+      const check=el(settings,'section','ji-settings-section');
+      el(check,'h3','ji-settings-title','Journal Check');
+      button(check,'Open Journal Check',()=>this.navigate('check'));
       const maintenance=el(settings,'details','ji-settings-details ji-maintenance');el(maintenance,'summary','','Maintenance');
       el(maintenance,'p','ji-settings-help','Repair legacy Pixel Banner properties with a backup.');
       button(maintenance,'Repair banners',()=>this.plugin.repairBanners(),'ji-button');
@@ -202,24 +260,32 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
     randomMemory(entries){
       const candidates=entries.filter(e=>memoryEligible(e,this.prefs().excluded)&&e.date<localKey(new Date())&&(!this.randomEntry||e.file.path!==this.randomEntry.file.path));
       if(!candidates.length){new Notice('No other memories available.');return;}
-      this.randomEntry=candidates[Math.floor(Math.random()*candidates.length)];this.navigate('memories');
+      this.randomEntry=candidates[Math.floor(Math.random()*candidates.length)];
+      this.memoriesMode='day';this.clearScroll('memories');this.navigate('memories');
     },
-    memoryCards(root,entries,reference){
+    memoryCards(root,entries,reference,showAge=true){
       const grid=el(root,'div','ji-memory-cards');
       for(const entry of entries){const card=el(grid,'article','ji-memory-card');
         if(this.plugin.photoController&&this.plugin.settings.experience?.showPhotoPreviews!==false)this.plugin.photoController.gallery(card,entry.photos,entry.file.path,{limit:3,className:'ji-memory-photos'});
         const content=el(card,'div','ji-memory-copy'),years=Number(reference.slice(0,4))-Number(entry.date.slice(0,4));
-        el(content,'span','ji-memory-age',years>0?years+' '+(years===1?'year':'years')+' ago':'Earlier this year');el(content,'h3','ji-memory-date',fd(entry.date));
-        el(content,'span','ji-muted',n(entry.words)+' words');el(content,'p','ji-memory-excerpt',entry.text.slice(0,330)+(entry.text.length>330?'…':''));
-        const actions=el(content,'div','ji-memory-actions');button(actions,'Read Entry',()=>this.app.workspace.getLeaf('tab').openFile(entry.file),'ji-button');
+        if(showAge)el(content,'span','ji-memory-age',years>0?years+' '+(years===1?'year':'years')+' ago':'Earlier this year');
+        el(content,'h3','ji-memory-date',fd(entry.date));
+        if(entry.text)el(content,'p','ji-memory-excerpt',entry.text.slice(0,330)+(entry.text.length>330?'…':''));
+        const actions=el(content,'div','ji-memory-actions');button(actions,'Read Entry',()=>this.openEntry(entry),'ji-button');
+        this.renderSaveMemory(actions,entry);
       }
     },
     renderMemories(root,entries){
-      const h=this.title(root,'','On This Day'),tools=el(h,'div','ji-memory-tools');
+      if(this.renderMemoryNavigation(root,entries))return;
+      const tools=el(root,'div','ji-memory-tools');
       const input=el(tools,'input','ji-input ji-date-input');input.type='date';input.value=this.memoryDate;input.max=localKey(new Date());input.setAttribute('aria-label','Select a date for memories');
+      input.setAttribute('data-ji-focus','memory-date');
       input.addEventListener('change',()=>{if(input.value&&input.value<=localKey(new Date())&&validDate(...input.value.split('-'))===input.value){this.memoryDate=input.value;this.randomEntry=null;this.render();}});
       button(tools,'Today',()=>{this.memoryDate=localKey(new Date());this.randomEntry=null;this.render();},'ji-button');button(tools,'Random Memory',()=>this.randomMemory(entries),'ji-button');
-      if(this.randomEntry&&memoryEligible(this.randomEntry,this.prefs().excluded)){const panel=el(root,'section','ji-panel ji-random-panel');const rh=this.title(panel,'','Random Memory');button(rh,'Dismiss',()=>{this.randomEntry=null;this.render();},'ji-link');this.memoryCards(panel,[this.randomEntry],localKey(new Date()));}
+      const random=this.randomEntry&&entries.find(entry=>entry.file.path===this.randomEntry.file.path);
+      if(random&&random.date<=localKey(new Date())&&memoryEligible(random,this.prefs().excluded)){
+        const panel=el(root,'section','ji-panel ji-random-panel');const rh=this.title(panel,'','Random Memory');button(rh,'Dismiss',()=>{this.randomEntry=null;this.render();},'ji-link');this.memoryCards(panel,[random],localKey(new Date()));
+      }
       const found=this.memoriesFor(entries,this.memoryDate),years=[...new Set(found.map(e=>e.date.slice(0,4)))].sort().reverse();
       if(!found.length){const empty=el(root,'div','ji-memory-empty');el(empty,'p','ji-muted','No memories for this date.');}
       for(const year of years){const group=el(root,'section','ji-memory-year');el(group,'h3','ji-year-label',year);this.memoryCards(group,found.filter(e=>e.date.startsWith(year)),this.memoryDate);}
@@ -284,7 +350,7 @@ function install(JournalView,{el,button,formatNumber:n,formatDate:fd,localKey,va
       this.chartDetails(panel,items,'Words',entries,detail);return panel;
     },
     renderInsights(root,entries){
-      const h=this.title(root,'','Insights');const controls=el(h,'div','ji-insight-controls');
+      const controls=el(root,'div','ji-insight-controls');
       const select=el(controls,'select','ji-select');select.setAttribute('aria-label','Insights period');for(const [id,label] of [['30','Last 30 days'],['90','Last 90 days'],['year','Selected year'],['all','All time'],['custom','Custom dates']]){const o=el(select,'option','',label);o.value=id;}select.value=this.rangeMode;select.addEventListener('change',()=>{this.rangeMode=select.value;this.drill=null;this.savePrefs({rangeMode:this.rangeMode});this.render();});if(this.rangeMode==='year')this.yearControl(controls,entries);
       const today=localKey(new Date());
       if(this.rangeMode==='custom'){const tools=el(root,'div','ji-date-range');for(const [key,label] of [['start','From'],['end','Through']]){const lab=el(tools,'label','ji-date-label');el(lab,'span','',label);const input=el(lab,'input','ji-input');input.type='date';input.max=today;input.value=this.customRange[key]||'';input.addEventListener('change',()=>{this.customRange[key]=input.value;this.savePrefs({customRange:this.customRange});});}button(tools,'Apply dates',()=>{this.drill=null;this.render();},'ji-button');}
